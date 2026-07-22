@@ -298,10 +298,13 @@ export function problemToError(status: number, body: unknown, headers?: Headers)
 export function toScorSyncError(err: unknown): ScorSyncError {
   if (err instanceof ScorSyncError) return err;
   if (err instanceof Error) {
+    // An abort is a decision, not a transport failure — never report it as one.
+    if (err.name === 'AbortError' || /\baborted\b/i.test(err.message)) {
+      return new ScorSyncError('ABORTED', err.message, { detail: err.message, cause: err });
+    }
     // fetch surfaces connection problems as TypeError('fetch failed') with a cause.
     const isNetwork =
       err.name === 'TypeError' ||
-      err.name === 'AbortError' ||
       /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN/i.test(
         `${err.message} ${String((err as { cause?: unknown }).cause ?? '')}`,
       );

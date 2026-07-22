@@ -111,6 +111,12 @@ export async function confirm(
   try {
     const answer = (await rl.question(`${question}${suffix}`)).trim();
     return expected ? answer === expected : /^(y|yes)$/i.test(answer);
+  } catch {
+    // readline rejects when stdin reaches EOF (Ctrl-D, or a closed pipe) before an
+    // answer arrives. That is not a confirmation, and it must not read as a failure of
+    // the API call: silence means no.
+    stderr.write('\nNo confirmation received.\n');
+    return false;
   } finally {
     rl.close();
   }

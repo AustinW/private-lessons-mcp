@@ -198,6 +198,20 @@ describe('toScorSyncError', () => {
     expect(err.code).toBe('NETWORK_ERROR');
     expect(err.exitCode).toBe(18);
   });
+
+  it('classifies an abort as ABORTED, not as a transport failure', () => {
+    // readline rejects with "Aborted with Ctrl+D" when stdin reaches EOF mid-prompt.
+    // Reporting that as NETWORK_ERROR would tell the operator the API was unreachable
+    // when in fact they simply did not confirm.
+    for (const err of [
+      Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }),
+      new Error('Aborted with Ctrl+D'),
+    ]) {
+      const mapped = toScorSyncError(err);
+      expect(mapped.code).toBe('ABORTED');
+      expect(mapped.exitCode).toBe(19);
+    }
+  });
 });
 
 describe('AthleteAmbiguousError', () => {
