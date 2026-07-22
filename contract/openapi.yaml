@@ -1,0 +1,2543 @@
+openapi: 3.1.0
+info:
+  title: ScorSync Private Lessons API
+  version: 1.0.0
+  summary: First-party REST API (v1) for private-lesson scheduling and billing.
+  description: |
+    Versioned first-party REST API over the ScorSync private-lessons application
+    (Laravel). This is the **frozen Phase 1 contract**: everything downstream — the
+    domain layer, the endpoints, and a separately generated TypeScript MCP server + CLI —
+    is built against this document. There is no runtime behaviour in this phase.
+
+    ## Authentication
+    HTTP bearer using **Laravel Sanctum personal access tokens**
+    (`Authorization: Bearer <token>`). Tokens carry one or more of 8 abilities (scopes).
+    See the `bearerAuth` security scheme for the scope model. Token management does not
+    exist in this API by design — tokens are created only in the session-authenticated
+    web UI, so an MCP/CLI client physically cannot create or elevate a token.
+
+    A missing, invalid, expired, or revoked token is rejected by the Sanctum auth layer
+    with **HTTP 401** before the application error model applies. 401 is therefore a
+    framework-level response and is intentionally *not* part of the 13-code application
+    error taxonomy below (none of the codes denote "unauthenticated"). Authenticated-but-
+    unauthorized conditions use `403` with code `INSUFFICIENT_SCOPE` (missing scope) or
+    `FORBIDDEN` (policy denies).
+
+    ## Scope -> operation mapping
+    HTTP bearer schemes cannot enumerate scopes the way OAuth2 flows can, so the required
+    scope(s) for each operation are declared with the `x-required-scopes` extension on the
+    operation **and** restated in the operation description. This is the single, consistent
+    representation used throughout the document.
+
+    | Operation | Required scope |
+    |---|---|
+    | `GET /me` | none (any valid token) |
+    | `GET /lessons`, `GET /lessons/{id}` | `lessons:read` |
+    | `POST /lessons`, `PATCH /lessons/{id}` | `lessons:write` |
+    | `POST /lessons/{id}/cancel` | `lessons:cancel` |
+    | `POST /lessons/{id}/mark-paid` | `lessons:mark-paid` |
+    | `GET /availability` | `lessons:read` |
+    | `GET /pricing-quotes` | `lessons:read` |
+    | `GET /athletes`, `GET /athletes/{id}` | `athletes:read` |
+    | `POST /athletes` | `athletes:create` |
+    | `GET /balances` | `balances:read` |
+    | `GET /audit-events` | `audit:read` |
+
+    A token scope is necessary but not sufficient: the owner's policy
+    (`PrivateLessonPolicy` / `AthletePolicy`) also runs per request, so removing a role or
+    disabling a user takes effect on the very next call. **Waiver status is read-only
+    through every scope — no scope can set it.**
+
+    ## Timestamps (RFC 3339, explicit offset required in and out)
+    Every timestamp field (`scheduled_at`, `paid_at`, `quoted_at`, `created_at`, ...) is
+    RFC 3339 with an **explicit UTC offset that is required on input and always present on
+    output** (e.g. `2026-08-04T14:00:00-07:00`). Naive / offset-less input
+    (`2026-08-04T14:00:00` or `...Z`-less local strings) is **rejected with `422`
+    `VALIDATION_FAILED`**. The server parses input as an absolute instant, converts to the
+    tenant timezone (`America/Los_Angeles`), and emits RFC 3339 with an explicit Pacific
+    offset. See `docs/api/contracts.md` for the boundary rule and its interim status.
+
+    ## Request correlation
+    Clients may send `X-Request-Id`; the server generates one if absent. It is echoed on
+    **every** response as the `X-Request-Id` header and appears as `request_id` in every
+    problem document.
+
+    ## Errors
+    All error responses use `application/problem+json` (RFC 9457) with the `ProblemDetails`
+    schema. Every application error carries a `code` from the fixed 13-value enum.
+
+    ## Rate limiting
+    Per-token throttling returns `429` with `code: RATE_LIMITED` and a `Retry-After` header.
+    The budget is **60 requests per minute per token** by default (`API_THROTTLE_PER_MINUTE`),
+    keyed on the token id — so one token's traffic cannot exhaust another's. Every response
+    also carries `X-RateLimit-Limit` and `X-RateLimit-Remaining`; a `429` adds `Retry-After`
+    and `X-RateLimit-Reset`. These are framework-emitted headers and are declared on the
+    `429` response only, but a client may read them on any response.
+  contact:
+    name: ScorSync API
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: https://{host}/api/v1
+    description: ScorSync instance (self-hosted). The base path is always /api/v1.
+    variables:
+      host:
+        default: scorsync.example.com
+        description: Host of the ScorSync instance.
+
+tags:
+  - name: Identity
+    description: The authenticated identity and its granted scopes.
+  - name: Lessons
+    description: Private-lesson scheduling, updates, cancellation, and payment marking.
+  - name: Availability
+    description: Bookable windows for a coach on a given date.
+  - name: Athletes
+    description: Athlete search, lookup, and creation.
+  - name: Pricing
+    description: Advisory facility-fee quotes.
+  - name: Balances
+    description: Per-coach unpaid facility fees owed to the gym.
+  - name: Audit
+    description: Append-only audit log (Admin only).
+
+security:
+  - bearerAuth: []
+
+paths:
+  /me:
+    get:
+      operationId: getMe
+      tags: [Identity]
+      summary: Get the authenticated identity and token scopes.
+      description: |
+        Returns the token owner (user), their roles, and the abilities (scopes) granted to
+        the current token. Requires only a valid token — **no specific scope**.
+      x-required-scopes: []
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS https://scorsync.example.com/api/v1/me \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Accept: application/json' \
+              -H 'X-Request-Id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+      responses:
+        '200':
+          description: The authenticated identity.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Me'
+              examples:
+                coach_token:
+                  summary: A Coach's booking token (three scopes, expires in 90 days).
+                  value:
+                    data:
+                      id: 7
+                      name: Dana Smith
+                      email: dana.smith@example.com
+                      roles: [Coach]
+                      scopes: [lessons:read, lessons:write, athletes:read]
+                      token:
+                        id: 12
+                        name: booking-bot
+                        fingerprint: a1b2c3
+                        last_used_at: '2026-08-04T09:14:22-07:00'
+                        expires_at: '2026-11-02T00:00:00-07:00'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /lessons:
+    get:
+      operationId: listLessons
+      tags: [Lessons]
+      summary: List lessons visible to the caller.
+      description: |
+        Returns lessons the caller may see: Admin/Management see all; Coach/Staff see only
+        their own (`staff_id == token owner`). Requires scope `lessons:read`.
+
+        Date filters `from`/`to` are calendar dates interpreted in the tenant timezone
+        (`America/Los_Angeles`).
+      x-required-scopes: [lessons:read]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS 'https://scorsync.example.com/api/v1/lessons?from=2026-08-03&to=2026-08-09&paid=false' \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Accept: application/json'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - name: from
+          in: query
+          required: false
+          description: Inclusive lower bound (Pacific calendar date) on `scheduled_at`.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          description: Inclusive upper bound (Pacific calendar date) on `scheduled_at`.
+          schema:
+            type: string
+            format: date
+        - name: coach
+          in: query
+          required: false
+          description: Filter by coach (staff) user id. Coach/Staff tokens are always scoped to themselves regardless of this value.
+          schema:
+            type: integer
+        - name: paid
+          in: query
+          required: false
+          description: Filter by payment status (`true` = has `paid_at`, `false` = unpaid).
+          schema:
+            type: boolean
+        - name: athlete
+          in: query
+          required: false
+          description: Filter to lessons that include this athlete id.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Matching lessons.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Lesson'
+              examples:
+                lessons:
+                  $ref: '#/components/examples/LessonList'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    post:
+      operationId: createLesson
+      tags: [Lessons]
+      summary: Create a lesson.
+      description: |
+        Books a lesson for one or more athletes with a coach. Requires scope
+        `lessons:write`.
+
+        **No athlete name field exists.** The request accepts `athlete_ids` only; there is
+        no code path where a write can guess an identity, so `ATHLETE_AMBIGUOUS` can never
+        be raised here (it is a *search* result on `GET /athletes`). A missing athlete must
+        be created first with `POST /athletes`.
+
+        **Idempotency:** the `Idempotency-Key` header is **required**. Replaying the same
+        key with the same canonical body returns the stored original response (a fresh
+        `request_id` is minted). Same key + different body -> `409 IDEMPOTENCY_KEY_REUSED`.
+        A concurrent duplicate that arrives while the first is still in flight -> `409`
+        (code `IDEMPOTENCY_KEY_REUSED`, `retryable: true`, `Retry-After` set).
+
+        **Acknowledgements:** `fee_acknowledged: true` is required (else `422`
+        `FACILITY_FEE_ACK_REQUIRED`); `late_booking_acknowledged: true` is required **when
+        the booking is late** (else `422 LATE_BOOKING_ACK_REQUIRED`). Both are recorded in
+        the audit event.
+
+        On success the response carries a strong `ETag` (`"lesson-<id>-v<version>"`).
+      x-required-scopes: [lessons:write]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS -X POST https://scorsync.example.com/api/v1/lessons \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              -H 'Idempotency-Key: 8f14e45f-ea0b-4d3f-9c1a-2b7d6e5f0a13' \
+              -d '{
+                    "coach_id": 7,
+                    "athlete_ids": [12],
+                    "scheduled_at": "2026-08-04T14:00:00-07:00",
+                    "duration_minutes": 60,
+                    "fee_acknowledged": true,
+                    "notes": "Working bar routine."
+                  }'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateLessonRequest'
+            examples:
+              standard:
+                $ref: '#/components/examples/CreateLessonBody'
+              late_booking:
+                $ref: '#/components/examples/CreateLessonLateBody'
+      responses:
+        '201':
+          description: Lesson created.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Lesson'
+              examples:
+                created:
+                  $ref: '#/components/examples/LessonCreated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/LessonCreateConflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /lessons/{id}:
+    parameters:
+      - $ref: '#/components/parameters/LessonId'
+    get:
+      operationId: getLesson
+      tags: [Lessons]
+      summary: Get a single lesson.
+      description: |
+        Returns one lesson if the caller may view it. Requires scope `lessons:read`.
+        The response carries a strong `ETag` (`"lesson-<id>-v<version>"`) for use as
+        `If-Match` on subsequent writes.
+      x-required-scopes: [lessons:read]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            # -D - prints the response headers, which is where the ETag you will
+            # send back as If-Match lives.
+            curl -sS -D - https://scorsync.example.com/api/v1/lessons/42 \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Accept: application/json'
+            # ETag: "lesson-42-v3"
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+      responses:
+        '200':
+          description: The lesson.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Lesson'
+              examples:
+                lesson:
+                  $ref: '#/components/examples/LessonDetail'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    patch:
+      operationId: updateLesson
+      tags: [Lessons]
+      summary: Update a lesson.
+      description: |
+        Partially updates a lesson. Requires scope `lessons:write`.
+
+        **No athlete name field exists** — reassign athletes with `athlete_ids` only.
+
+        **Absent vs null:** an omitted field is left unchanged; a field sent explicitly as
+        `null` clears it (applies to the nullable fields `notes` and `observer`). Non-
+        nullable fields cannot be sent as `null`.
+
+        **Optimistic concurrency:** the `If-Match` header is **required** and must carry
+        the strong ETag of the version being modified. If `If-Match` is absent -> `422`
+        `VALIDATION_FAILED`; if present but stale -> `412 VERSION_MISMATCH` with
+        `current_version` in the body. On success the version is incremented and a new
+        strong `ETag` is returned.
+
+        If a reschedule moves the lesson to a late-booking start, `late_booking_acknowledged:
+        true` is required (else `422 LATE_BOOKING_ACK_REQUIRED`).
+      x-required-scopes: [lessons:write]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            # If-Match is the strong ETag from the read, sent back verbatim
+            # (quotes included).
+            curl -sS -X PATCH https://scorsync.example.com/api/v1/lessons/42 \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              -H 'If-Match: "lesson-42-v3"' \
+              -d '{"scheduled_at": "2026-08-04T14:30:00-07:00", "notes": null}'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLessonRequest'
+            examples:
+              reschedule_and_clear_notes:
+                $ref: '#/components/examples/UpdateLessonBody'
+      responses:
+        '200':
+          description: Lesson updated.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Lesson'
+              examples:
+                updated:
+                  $ref: '#/components/examples/LessonUpdated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/SlotConflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /lessons/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/LessonId'
+    post:
+      operationId: cancelLesson
+      tags: [Lessons]
+      summary: Cancel a lesson.
+      description: |
+        Cancels (soft-deletes) a lesson. Requires scope `lessons:cancel`.
+
+        **Optimistic concurrency:** `If-Match` is **required** (absent -> `422`
+        `VALIDATION_FAILED`; stale -> `412 VERSION_MISMATCH`).
+
+        **Idempotency:** `Idempotency-Key` is **accepted** (optional). A lost response
+        followed by a retry replays the original `200` rather than returning `404` on the
+        now-cancelled lesson.
+
+        The response returns the lesson in its final (cancelled) state with an updated
+        strong `ETag`.
+      x-required-scopes: [lessons:cancel]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS -X POST https://scorsync.example.com/api/v1/lessons/42/cancel \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              -H 'If-Match: "lesson-42-v3"' \
+              -H 'Idempotency-Key: 4b2c9d81-6f30-4a55-9f21-0c8e77d1b4aa' \
+              -d '{"reason": "Athlete is ill."}'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelLessonRequest'
+            examples:
+              with_reason:
+                $ref: '#/components/examples/CancelLessonBody'
+      responses:
+        '200':
+          description: Lesson cancelled.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Lesson'
+              examples:
+                cancelled:
+                  $ref: '#/components/examples/LessonCancelled'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /lessons/{id}/mark-paid:
+    parameters:
+      - $ref: '#/components/parameters/LessonId'
+    post:
+      operationId: markLessonPaid
+      tags: [Lessons]
+      summary: Mark a lesson as paid.
+      description: |
+        Records payment of the facility fee for a lesson. Requires scope
+        `lessons:mark-paid`.
+
+        **Optimistic concurrency:** `If-Match` is **required** (absent -> `422`
+        `VALIDATION_FAILED`; stale -> `412 VERSION_MISMATCH`).
+
+        **Idempotency:** `Idempotency-Key` is **accepted** (optional); a retry replays the
+        original `200`.
+
+        The response returns the lesson with `paid_at` set and an updated strong `ETag`.
+      x-required-scopes: [lessons:mark-paid]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS -X POST https://scorsync.example.com/api/v1/lessons/42/mark-paid \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              -H 'If-Match: "lesson-42-v3"' \
+              -H 'Idempotency-Key: 1d90f7c3-55a2-4b18-8e77-b6a0c2f4e9d1' \
+              -d '{"paid_at": "2026-08-04T15:10:00-07:00"}'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/IdempotencyKeyOptional'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkLessonPaidRequest'
+            examples:
+              explicit_time:
+                $ref: '#/components/examples/MarkLessonPaidBody'
+      responses:
+        '200':
+          description: Lesson marked paid.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Lesson'
+              examples:
+                marked_paid:
+                  $ref: '#/components/examples/LessonMarkedPaid'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /availability:
+    get:
+      operationId: getAvailability
+      tags: [Availability]
+      summary: Bookable windows for a coach on a date.
+      description: |
+        Given a date, lesson duration, and coach, returns bookable windows =
+        business hours (07:00-22:00 Pacific) minus that coach's existing lessons, in
+        `America/Los_Angeles`, with late-booking starts flagged. Requires scope
+        `lessons:read`.
+
+        These are **not** the family booking-site "posted slots" (out of scope).
+      x-required-scopes: [lessons:read]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS 'https://scorsync.example.com/api/v1/availability?date=2026-08-04&duration=60&coach=7' \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Accept: application/json'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - name: date
+          in: query
+          required: true
+          description: Pacific calendar date to compute availability for.
+          schema:
+            type: string
+            format: date
+        - name: duration
+          in: query
+          required: true
+          description: Lesson duration in minutes.
+          schema:
+            $ref: '#/components/schemas/DurationMinutes'
+        - name: coach
+          in: query
+          required: false
+          description: Coach (staff) user id. Defaults to the token owner for Coach/Staff tokens.
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Availability for the requested date/coach.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Availability'
+              examples:
+                availability:
+                  $ref: '#/components/examples/AvailabilityDay'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /athletes:
+    get:
+      operationId: searchAthletes
+      tags: [Athletes]
+      summary: Search athletes by name.
+      description: |
+        Searches athletes by name and returns the matching **candidates**. Requires scope
+        `athletes:read`.
+
+        A search that matches multiple athletes returns all of them here with `200` — a
+        search returning matches is not an error. Because the server cannot know caller intent
+        (a user browsing vs. an agent resolving a name to one id), it never emits ambiguity as
+        an HTTP error. `ATHLETE_AMBIGUOUS` is **client-surfaced**: a CLI/MCP client performing
+        single-athlete resolution treats a `>1` result as `ATHLETE_AMBIGUOUS` and requires the
+        caller to choose an id before writing. It is **never** a write error — writes take
+        `athlete_ids` only.
+
+        **Field visibility depends on the caller's role, not scope:** Coach/Staff tokens
+        receive only `id`, `name`, `waiver_signed`, `membership_status` (never `notes`);
+        Admin/Management receive the full record including `notes`.
+      x-required-scopes: [athletes:read]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS 'https://scorsync.example.com/api/v1/athletes?query=reyes' \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Accept: application/json'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - name: query
+          in: query
+          required: false
+          description: Free-text name search. Empty/absent returns an unfiltered (policy-scoped) list.
+          schema:
+            type: string
+          example: reyes
+      responses:
+        '200':
+          description: Matching athletes (candidates).
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Athlete'
+              examples:
+                coach_view:
+                  $ref: '#/components/examples/AthleteListCoachView'
+                admin_view:
+                  $ref: '#/components/examples/AthleteListAdminView'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    post:
+      operationId: createAthlete
+      tags: [Athletes]
+      summary: Create an athlete.
+      description: |
+        Creates an athlete. Requires scope `athletes:create`. Both Admin/Management and
+        Coach/Staff tokens may create athletes (matching the web picker's behaviour).
+
+        **`waiver_signed` is read-only and cannot be set by any scope** and is therefore
+        not accepted in the body. `notes` is honoured only for Admin/Management tokens.
+
+        **Idempotency:** the `Idempotency-Key` header is **required** (same semantics as
+        `POST /lessons`).
+
+        The created athlete is returned in the field-visibility view appropriate to the
+        caller's role.
+      x-required-scopes: [athletes:create]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS -X POST https://scorsync.example.com/api/v1/athletes \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json' \
+              -H 'Idempotency-Key: c7e2a940-3b16-4f8e-9d02-5a1f8c3b7e64' \
+              -d '{"first_name": "Ava", "last_name": "Reyes", "membership_status": "member"}'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - $ref: '#/components/parameters/IdempotencyKeyRequired'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAthleteRequest'
+            examples:
+              create:
+                $ref: '#/components/examples/CreateAthleteBody'
+      responses:
+        '201':
+          description: Athlete created.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Athlete'
+              examples:
+                created:
+                  $ref: '#/components/examples/AthleteCreated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /athletes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AthleteId'
+    get:
+      operationId: getAthlete
+      tags: [Athletes]
+      summary: Get a single athlete.
+      description: |
+        Returns one athlete. Requires scope `athletes:read`. Field visibility depends on
+        role: Coach/Staff see only `id`, `name`, `waiver_signed`, `membership_status`;
+        Admin/Management see the full record including `notes`.
+      x-required-scopes: [athletes:read]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS https://scorsync.example.com/api/v1/athletes/12 \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Accept: application/json'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+      responses:
+        '200':
+          description: The athlete.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Athlete'
+              examples:
+                coach_view:
+                  $ref: '#/components/examples/AthleteDetailCoachView'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /pricing-quotes:
+    get:
+      operationId: getPricingQuote
+      tags: [Pricing]
+      summary: Get an advisory facility-fee quote.
+      description: |
+        Returns a server-computed facility fee for a prospective lesson: `cost_cents`,
+        membership determination (all-athletes-enrolled rule), `is_late_booking`, and a
+        human-readable breakdown. Read-only, no side effects. Requires scope `lessons:read`.
+
+        **Advisory, not binding.** A quote is not deterministic over time (membership can
+        change; `is_late_booking` flips once the scheduled time passes), so the response
+        includes `quoted_at` and is labelled advisory. **The fee is always recalculated at
+        create time** — the quote is never trusted as the source of truth. There is no quote
+        token and no `QUOTE_EXPIRED` code: the create path accepts no quote to expire.
+      x-required-scopes: [lessons:read]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            # athlete_ids repeats the bare key once per athlete (style: form,
+            # explode: true). The PHP-native `athlete_ids[]=12` form is also
+            # accepted, so either serializer works.
+            curl -sS -G https://scorsync.example.com/api/v1/pricing-quotes \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Accept: application/json' \
+              --data-urlencode 'duration=60' \
+              --data-urlencode 'athlete_ids=12' \
+              --data-urlencode 'athlete_ids=13' \
+              --data-urlencode 'scheduled_at=2026-08-04T14:00:00-07:00'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - name: duration
+          in: query
+          required: true
+          description: Lesson duration in minutes.
+          schema:
+            $ref: '#/components/schemas/DurationMinutes'
+          example: 60
+        - name: athlete_ids
+          in: query
+          required: true
+          description: Athlete ids on the prospective lesson (used for the all-enrolled membership rule).
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: integer
+            minItems: 1
+        - name: scheduled_at
+          in: query
+          required: true
+          description: >-
+            Prospective start time. RFC 3339 with an explicit offset is required;
+            naive/offset-less input is rejected with 422 VALIDATION_FAILED.
+          schema:
+            $ref: '#/components/schemas/Rfc3339DateTime'
+      responses:
+        '200':
+          description: An advisory pricing quote.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/PricingQuote'
+              examples:
+                quote:
+                  $ref: '#/components/examples/PricingQuoteExample'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /balances:
+    get:
+      operationId: listBalances
+      tags: [Balances]
+      summary: Per-coach unpaid facility fees owed to the gym.
+      description: |
+        Returns per-coach **unpaid facility fees that the coach owes the gym** — money the
+        coach owes the gym, **not** money families owe the coach. Requires scope
+        `balances:read`. Coach/Staff see their own balance; Admin/Management see all.
+
+        Amounts are computed from `effectiveCostCents()` (honouring `cost_override_cents`
+        and `late_fee_waived`), never raw `cost_cents`.
+      x-required-scopes: [balances:read]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            curl -sS https://scorsync.example.com/api/v1/balances \
+              -H 'Authorization: Bearer 12|kR8pQ2vX...redacted' \
+              -H 'Accept: application/json'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+      responses:
+        '200':
+          description: Per-coach balances.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Balance'
+              examples:
+                balances:
+                  $ref: '#/components/examples/BalanceList'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /audit-events:
+    get:
+      operationId: listAuditEvents
+      tags: [Audit]
+      summary: List audit events (Admin only).
+      description: |
+        Returns the append-only audit log, newest first (`created_at` then `id`, both
+        descending). Requires scope `audit:read` **and** an Admin-only policy — a
+        non-Admin token with `audit:read` still receives `403` `FORBIDDEN`.
+
+        **Cursor pagination.** The log only ever grows, so the read is bounded: at most
+        `limit` events (default 50, maximum 200) are returned per call. Paging uses an
+        opaque **keyset cursor** over the same `(created_at, id)` ordering, not an offset —
+        rows are continually appended, and an offset page would repeat or skip a row as
+        soon as a write landed between two requests.
+
+        Follow `meta.next_cursor` while `meta.has_more` is true, passing it back verbatim
+        as `cursor`. A `limit` above the maximum is a `422 VALIDATION_FAILED`, not a silent
+        clamp; a `cursor` this endpoint did not issue is likewise `422`.
+      x-required-scopes: [audit:read]
+      x-codeSamples:
+        - lang: curl
+          label: curl
+          source: |
+            # First page.
+            curl -sS 'https://scorsync.example.com/api/v1/audit-events?limit=50' \
+              -H 'Authorization: Bearer 31|9pW4tZ...redacted' \
+              -H 'Accept: application/json'
+
+            # Next page — meta.next_cursor is passed back verbatim, never parsed.
+            curl -sS -G 'https://scorsync.example.com/api/v1/audit-events' \
+              -H 'Authorization: Bearer 31|9pW4tZ...redacted' \
+              -H 'Accept: application/json' \
+              --data-urlencode 'limit=50' \
+              --data-urlencode 'cursor=eyJjIjoiMjAyNi0wNy0yOFQwNjowMDowMFoiLCJpIjoiMDFKOFpCMkEwQjFDMkQzRTRGNUc2SDdKOEsifQ'
+      parameters:
+        - $ref: '#/components/parameters/XRequestIdRequest'
+        - name: limit
+          in: query
+          required: false
+          description: Maximum events to return. Above the maximum -> 422 VALIDATION_FAILED.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: >-
+            Opaque keyset cursor from a previous response's `meta.next_cursor`. Omit for
+            the first page. A value this endpoint did not issue -> 422 VALIDATION_FAILED.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One page of audit events, newest first.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEvent'
+                  meta:
+                    $ref: '#/components/schemas/CursorPageMeta'
+              examples:
+                first_page:
+                  $ref: '#/components/examples/AuditEventPage'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Sanctum personal access token
+      description: |
+        Laravel Sanctum personal access token, sent as `Authorization: Bearer <token>`.
+
+        Tokens carry one or more of these **8 scopes (abilities)**:
+        `lessons:read`, `lessons:write`, `lessons:cancel`, `lessons:mark-paid`,
+        `athletes:read`, `athletes:create`, `balances:read`, `audit:read`.
+
+        HTTP bearer schemes cannot enumerate scopes the way OAuth2 flows can, so the scope
+        required by each operation is declared with the `x-required-scopes` extension on the
+        operation and restated in its description (see the info-level scope table). A token
+        missing a required scope receives `403` with code `INSUFFICIENT_SCOPE`; a token with
+        the scope but denied by policy receives `403` with code `FORBIDDEN`. A missing /
+        invalid / expired / revoked token is rejected by the auth layer with `401` (framework
+        level, outside the 13-code application taxonomy).
+
+        Waiver status is read-only through every scope.
+
+  parameters:
+    LessonId:
+      name: id
+      in: path
+      required: true
+      description: Lesson id.
+      schema:
+        type: integer
+    AthleteId:
+      name: id
+      in: path
+      required: true
+      description: Athlete id.
+      schema:
+        type: integer
+    XRequestIdRequest:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: >-
+        Optional client-supplied correlation id. If absent the server generates one. The
+        value (supplied or generated) is echoed on the response `X-Request-Id` header and
+        as `request_id` in any problem document.
+      schema:
+        type: string
+      example: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+    IdempotencyKeyRequired:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Client-generated idempotency key (**required** on this endpoint). Replaying the same
+        key with the same canonical body returns the stored original response; same key with
+        a different body -> 409 IDEMPOTENCY_KEY_REUSED; a concurrent duplicate still in
+        progress -> 409 (IDEMPOTENCY_KEY_REUSED, retryable: true). Keys expire after 24h.
+      schema:
+        type: string
+        maxLength: 255
+      example: 8f14e45f-ea0b-4d3f-9c1a-2b7d6e5f0a13
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Optional client-generated idempotency key. When supplied, a retry replays the stored
+        original response instead of re-executing (so a lost cancel/mark-paid response can be
+        safely retried). Same key + different body -> 409 IDEMPOTENCY_KEY_REUSED.
+      schema:
+        type: string
+        maxLength: 255
+      example: 4b2c9d81-6f30-4a55-9f21-0c8e77d1b4aa
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: >-
+        **Required** strong ETag of the lesson version being modified, exactly as returned by
+        a prior response (`"lesson-<id>-v<version>"`). Must be a strong validator (never a
+        weak `W/"..."` tag). Absent -> 422 VALIDATION_FAILED; present but stale -> 412
+        VERSION_MISMATCH (with `current_version` in the body).
+      schema:
+        type: string
+      example: '"lesson-42-v3"'
+
+  headers:
+    XRequestId:
+      description: Correlation id echoed on every response (client-supplied or server-generated).
+      schema:
+        type: string
+    ETag:
+      description: >-
+        Strong entity tag for the returned lesson, formatted `"lesson-<id>-v<version>"`.
+        Use verbatim as `If-Match` on the next write. Never weak.
+      schema:
+        type: string
+      example: '"lesson-42-v3"'
+    RetryAfter:
+      description: Seconds to wait before retrying (rate limiting, and in-progress idempotent retries).
+      schema:
+        type: integer
+        minimum: 0
+    RateLimitLimit:
+      description: >-
+        Requests permitted per minute for this token. Emitted by the framework throttle on
+        every `/api/v1` response, not only on `429`.
+      schema:
+        type: integer
+        minimum: 1
+      example: 60
+    RateLimitRemaining:
+      description: Requests left in the current minute for this token.
+      schema:
+        type: integer
+        minimum: 0
+      example: 58
+    RateLimitReset:
+      description: Unix timestamp at which the current window resets. Present on `429` only.
+      schema:
+        type: integer
+      example: 1784717614
+
+  examples:
+    # ---------------------------------------------------------------------------
+    # One consistent cast is used across every example in this document so the
+    # payloads can be read end to end as a single session:
+    #   coach   — user 7, "Dana Smith" (Coach role)
+    #   athletes— 12 "Ava Reyes" (member), 13 "Noah Kim"
+    #   lesson  — id 42, 2026-08-04 14:00 Pacific, 60 minutes, member rate ($10.00)
+    # Versions advance 1 -> 3 -> 4 exactly as a real client would observe them.
+    # ---------------------------------------------------------------------------
+    LessonDetail:
+      summary: A single unpaid lesson at version 3 (ETag "lesson-42-v3").
+      value:
+        data:
+          id: 42
+          coach_id: 7
+          coach_name: Dana Smith
+          athletes:
+            - id: 12
+              name: Ava Reyes
+          student_name: null
+          scheduled_at: '2026-08-04T14:00:00-07:00'
+          duration_minutes: 60
+          is_member: true
+          is_late_booking: false
+          observer: null
+          notes: Working bar routine.
+          cost_cents: 1000
+          effective_cost_cents: 1000
+          cost_override_cents: null
+          cost_override_reason: null
+          late_fee_waived: false
+          paid_at: null
+          cancelled_at: null
+          version: 3
+          created_at: '2026-07-28T09:31:02-07:00'
+          updated_at: '2026-08-01T16:20:44-07:00'
+    LessonList:
+      summary: Two lessons for the week (a Coach token sees only its own).
+      value:
+        data:
+          - id: 42
+            coach_id: 7
+            coach_name: Dana Smith
+            athletes:
+              - id: 12
+                name: Ava Reyes
+            student_name: null
+            scheduled_at: '2026-08-04T14:00:00-07:00'
+            duration_minutes: 60
+            is_member: true
+            is_late_booking: false
+            observer: null
+            notes: Working bar routine.
+            cost_cents: 1000
+            effective_cost_cents: 1000
+            cost_override_cents: null
+            cost_override_reason: null
+            late_fee_waived: false
+            paid_at: null
+            cancelled_at: null
+            version: 3
+            created_at: '2026-07-28T09:31:02-07:00'
+            updated_at: '2026-08-01T16:20:44-07:00'
+          - id: 43
+            coach_id: 7
+            coach_name: Dana Smith
+            athletes:
+              - id: 13
+                name: Noah Kim
+            student_name: null
+            scheduled_at: '2026-08-05T16:30:00-07:00'
+            duration_minutes: 90
+            is_member: false
+            is_late_booking: false
+            observer: Parent observing
+            notes: null
+            cost_cents: 3000
+            effective_cost_cents: 3000
+            cost_override_cents: null
+            cost_override_reason: null
+            late_fee_waived: false
+            paid_at: '2026-08-05T18:05:00-07:00'
+            cancelled_at: null
+            version: 2
+            created_at: '2026-07-29T11:02:10-07:00'
+            updated_at: '2026-08-05T18:05:00-07:00'
+    CreateLessonBody:
+      summary: Book Ava Reyes with coach 7 at 2:00 PM Pacific, fee acknowledged.
+      value:
+        coach_id: 7
+        athlete_ids: [12]
+        scheduled_at: '2026-08-04T14:00:00-07:00'
+        duration_minutes: 60
+        fee_acknowledged: true
+        notes: Working bar routine.
+    CreateLessonLateBody:
+      summary: A late booking — both acknowledgements sent.
+      value:
+        coach_id: 7
+        athlete_ids: [12, 13]
+        scheduled_at: '2026-07-22T18:00:00-07:00'
+        duration_minutes: 60
+        fee_acknowledged: true
+        late_booking_acknowledged: true
+    LessonCreated:
+      summary: The freshly created lesson at version 1 (ETag "lesson-42-v1").
+      value:
+        data:
+          id: 42
+          coach_id: 7
+          coach_name: Dana Smith
+          athletes:
+            - id: 12
+              name: Ava Reyes
+          student_name: null
+          scheduled_at: '2026-08-04T14:00:00-07:00'
+          duration_minutes: 60
+          is_member: true
+          is_late_booking: false
+          observer: null
+          notes: Working bar routine.
+          cost_cents: 1000
+          effective_cost_cents: 1000
+          cost_override_cents: null
+          cost_override_reason: null
+          late_fee_waived: false
+          paid_at: null
+          cancelled_at: null
+          version: 1
+          created_at: '2026-07-28T09:31:02-07:00'
+          updated_at: '2026-07-28T09:31:02-07:00'
+    UpdateLessonBody:
+      summary: Reschedule 30 minutes later and clear the note (null clears, omission leaves alone).
+      value:
+        scheduled_at: '2026-08-04T14:30:00-07:00'
+        notes: null
+    LessonUpdated:
+      summary: The updated lesson at version 4 (ETag "lesson-42-v4").
+      value:
+        data:
+          id: 42
+          coach_id: 7
+          coach_name: Dana Smith
+          athletes:
+            - id: 12
+              name: Ava Reyes
+          student_name: null
+          scheduled_at: '2026-08-04T14:30:00-07:00'
+          duration_minutes: 60
+          is_member: true
+          is_late_booking: false
+          observer: null
+          notes: null
+          cost_cents: 1000
+          effective_cost_cents: 1000
+          cost_override_cents: null
+          cost_override_reason: null
+          late_fee_waived: false
+          paid_at: null
+          cancelled_at: null
+          version: 4
+          created_at: '2026-07-28T09:31:02-07:00'
+          updated_at: '2026-08-02T08:11:19-07:00'
+    CancelLessonBody:
+      summary: Cancel with a reason (recorded on the audit event).
+      value:
+        reason: Athlete is ill.
+    LessonCancelled:
+      summary: The lesson in its final cancelled state (ETag "lesson-42-v4").
+      value:
+        data:
+          id: 42
+          coach_id: 7
+          coach_name: Dana Smith
+          athletes:
+            - id: 12
+              name: Ava Reyes
+          student_name: null
+          scheduled_at: '2026-08-04T14:00:00-07:00'
+          duration_minutes: 60
+          is_member: true
+          is_late_booking: false
+          observer: null
+          notes: Working bar routine.
+          cost_cents: 1000
+          effective_cost_cents: 1000
+          cost_override_cents: null
+          cost_override_reason: null
+          late_fee_waived: false
+          paid_at: null
+          cancelled_at: '2026-08-03T10:45:00-07:00'
+          version: 4
+          created_at: '2026-07-28T09:31:02-07:00'
+          updated_at: '2026-08-03T10:45:00-07:00'
+    MarkLessonPaidBody:
+      summary: Record payment at an explicit time (omit or send null for "now").
+      value:
+        paid_at: '2026-08-04T15:10:00-07:00'
+    LessonMarkedPaid:
+      summary: The lesson with paid_at set (ETag "lesson-42-v4").
+      value:
+        data:
+          id: 42
+          coach_id: 7
+          coach_name: Dana Smith
+          athletes:
+            - id: 12
+              name: Ava Reyes
+          student_name: null
+          scheduled_at: '2026-08-04T14:00:00-07:00'
+          duration_minutes: 60
+          is_member: true
+          is_late_booking: false
+          observer: null
+          notes: Working bar routine.
+          cost_cents: 1000
+          effective_cost_cents: 1000
+          cost_override_cents: null
+          cost_override_reason: null
+          late_fee_waived: false
+          paid_at: '2026-08-04T15:10:00-07:00'
+          cancelled_at: null
+          version: 4
+          created_at: '2026-07-28T09:31:02-07:00'
+          updated_at: '2026-08-04T15:10:00-07:00'
+    AvailabilityDay:
+      summary: Three bookable 60-minute windows left on 2026-08-04.
+      value:
+        data:
+          date: '2026-08-04'
+          coach_id: 7
+          coach_name: Dana Smith
+          duration_minutes: 60
+          timezone: America/Los_Angeles
+          business_hours:
+            start: '07:00'
+            end: '22:00'
+          slots:
+            - start: '2026-08-04T07:00:00-07:00'
+              end: '2026-08-04T08:00:00-07:00'
+              is_late_booking: false
+            - start: '2026-08-04T15:00:00-07:00'
+              end: '2026-08-04T16:00:00-07:00'
+              is_late_booking: false
+            - start: '2026-08-04T20:00:00-07:00'
+              end: '2026-08-04T21:00:00-07:00'
+              is_late_booking: false
+    AthleteListCoachView:
+      summary: Coach/Staff token — exactly four fields, never `notes`.
+      value:
+        data:
+          - id: 12
+            name: Ava Reyes
+            waiver_signed: true
+            membership_status: member
+          - id: 13
+            name: Noah Kim
+            waiver_signed: false
+            membership_status: not_member
+    AthleteListAdminView:
+      summary: Admin/Management token — the full record, including `notes`.
+      value:
+        data:
+          - id: 12
+            name: Ava Reyes
+            waiver_signed: true
+            membership_status: member
+            first_name: Ava
+            last_name: Reyes
+            notes: Prefers morning sessions.
+            created_at: '2026-05-11T13:02:00-07:00'
+            updated_at: '2026-07-19T08:40:12-07:00'
+    AthleteDetailCoachView:
+      summary: Coach/Staff token — exactly four fields.
+      value:
+        data:
+          id: 12
+          name: Ava Reyes
+          waiver_signed: true
+          membership_status: member
+    CreateAthleteBody:
+      summary: Create an athlete (`waiver_signed` is never accepted).
+      value:
+        first_name: Ava
+        last_name: Reyes
+        membership_status: member
+    AthleteCreated:
+      summary: The created athlete, in the caller's role view (Coach/Staff here).
+      value:
+        data:
+          id: 12
+          name: Ava Reyes
+          waiver_signed: false
+          membership_status: member
+    PricingQuoteExample:
+      summary: Advisory quote for a 60-minute member lesson.
+      value:
+        data:
+          duration_minutes: 60
+          athlete_ids: [12]
+          scheduled_at: '2026-08-04T14:00:00-07:00'
+          is_member: true
+          is_late_booking: false
+          cost_cents: 1000
+          currency: USD
+          hourly_rate_cents: 1000
+          late_multiplier_applied: false
+          breakdown: 60 minutes at the member rate of $10.00/hour = $10.00.
+          quoted_at: '2026-07-28T09:29:55-07:00'
+          advisory: true
+    BalanceList:
+      summary: What two coaches owe the gym in unpaid facility fees.
+      value:
+        data:
+          - coach_id: 7
+            coach_name: Dana Smith
+            unpaid_cents: 4500
+            currency: USD
+            unpaid_lesson_count: 3
+          - coach_id: 9
+            coach_name: Jordan Lee
+            unpaid_cents: 0
+            currency: USD
+            unpaid_lesson_count: 0
+    AuditEventPage:
+      summary: First page of the audit log, newest first, with another page to follow.
+      value:
+        data:
+          - id: 01J8ZB4M7N8P9Q0R1S2T3U4V5W
+            actor_id: 7
+            actor_type: App\Models\User
+            token_id: 12
+            token_fingerprint: a1b2c3
+            source: api
+            action: lesson.created
+            auditable_type: App\Models\PrivateLesson
+            auditable_id: '42'
+            changes:
+              fee_acknowledged: true
+              late_booking_acknowledged: false
+              scheduled_at: '2026-08-04 14:00:00'
+              duration: 60
+            request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+            ip: 203.0.113.24
+            user_agent: scorsync-mcp/1.0
+            created_at: '2026-07-28T09:31:02-07:00'
+          - id: 01J8ZB2A0B1C2D3E4F5G6H7J8K
+            actor_id: null
+            actor_type: null
+            token_id: null
+            token_fingerprint: null
+            source: console
+            action: lesson.reminder_sent
+            auditable_type: App\Models\PrivateLesson
+            auditable_id: '41'
+            changes: {}
+            request_id: null
+            ip: null
+            user_agent: null
+            created_at: '2026-07-28T06:00:00-07:00'
+        meta:
+          limit: 50
+          has_more: true
+          next_cursor: eyJjIjoiMjAyNi0wNy0yOFQwNjowMDowMFoiLCJpIjoiMDFKOFpCMkEwQjFDMkQzRTRGNUc2SDdKOEsifQ
+
+  responses:
+    Forbidden:
+      description: >-
+        Authenticated but not permitted. `INSUFFICIENT_SCOPE` (token lacks the required
+        scope) or `FORBIDDEN` (scope present but policy denies).
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            insufficient_scope:
+              summary: Token lacks the required scope.
+              value:
+                type: https://scorsync.example.com/errors/insufficient-scope
+                title: Insufficient scope
+                status: 403
+                detail: This token is missing the required scope 'lessons:write'.
+                code: INSUFFICIENT_SCOPE
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+            forbidden:
+              summary: Policy denies the action for this user.
+              value:
+                type: https://scorsync.example.com/errors/forbidden
+                title: Forbidden
+                status: 403
+                detail: You do not have permission to perform this action.
+                code: FORBIDDEN
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+    NotFound:
+      description: The referenced resource does not exist (or is not visible to the caller).
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            lesson_not_found:
+              summary: No such lesson.
+              value:
+                type: https://scorsync.example.com/errors/lesson-not-found
+                title: Lesson not found
+                status: 404
+                detail: No lesson with id 9999 is visible to this token.
+                code: LESSON_NOT_FOUND
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+            athlete_not_found:
+              summary: An athlete id in the request does not exist.
+              value:
+                type: https://scorsync.example.com/errors/athlete-not-found
+                title: Athlete not found
+                status: 404
+                detail: Athlete id 512 does not exist. Create it with POST /athletes first.
+                code: ATHLETE_NOT_FOUND
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+    SlotConflict:
+      description: >-
+        The coach already has a lesson overlapping the requested window (`SLOT_CONFLICT`).
+        Not retryable — change the time or coach.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/SlotConflictProblem'
+          examples:
+            slot_conflict:
+              summary: The coach already has a lesson overlapping this window.
+              value:
+                type: https://scorsync.example.com/errors/slot-conflict
+                title: Lesson conflicts with an existing booking
+                status: 409
+                detail: Coach already has a lesson from 2:00 PM to 3:00 PM Pacific.
+                code: SLOT_CONFLICT
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                errors:
+                  scheduled_at:
+                    - This time overlaps an existing lesson.
+    IdempotencyConflict:
+      description: >-
+        An `Idempotency-Key` conflict (`IDEMPOTENCY_KEY_REUSED`). Covers both a
+        same-key/different-body reuse (`retryable: false`) and a concurrent same-key request
+        still in progress (`retryable: true`, with `Retry-After`).
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/IdempotencyConflictProblem'
+          examples:
+            idempotency_key_reused:
+              summary: Same Idempotency-Key replayed with a different body.
+              value:
+                type: https://scorsync.example.com/errors/idempotency-key-reused
+                title: Idempotency key reused with a different request
+                status: 409
+                detail: This Idempotency-Key was already used with a different request body.
+                code: IDEMPOTENCY_KEY_REUSED
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+            request_in_progress:
+              summary: A request with this Idempotency-Key is still in flight.
+              value:
+                type: https://scorsync.example.com/errors/idempotency-key-reused
+                title: A request with this Idempotency-Key is in progress
+                status: 409
+                detail: The original request is still being processed. Retry after a short delay.
+                code: IDEMPOTENCY_KEY_REUSED
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: true
+    LessonCreateConflict:
+      description: >-
+        A create-lesson conflict: either `SLOT_CONFLICT` (coach already booked in the window,
+        `retryable: false`) or `IDEMPOTENCY_KEY_REUSED` (same-key/different-body reuse,
+        `retryable: false`; or a concurrent in-progress request, `retryable: true` with
+        `Retry-After`). Generated clients should model both codes in the 409 error union.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/SlotConflictProblem'
+              - $ref: '#/components/schemas/IdempotencyConflictProblem'
+          examples:
+            slot_conflict:
+              summary: The coach already has a lesson overlapping this window.
+              value:
+                type: https://scorsync.example.com/errors/slot-conflict
+                title: Lesson conflicts with an existing booking
+                status: 409
+                detail: Coach already has a lesson from 2:00 PM to 3:00 PM Pacific.
+                code: SLOT_CONFLICT
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                errors:
+                  scheduled_at:
+                    - This time overlaps an existing lesson.
+            idempotency_key_reused:
+              summary: Same Idempotency-Key replayed with a different body.
+              value:
+                type: https://scorsync.example.com/errors/idempotency-key-reused
+                title: Idempotency key reused with a different request
+                status: 409
+                detail: This Idempotency-Key was already used with a different request body.
+                code: IDEMPOTENCY_KEY_REUSED
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+            request_in_progress:
+              summary: A request with this Idempotency-Key is still in flight.
+              value:
+                type: https://scorsync.example.com/errors/idempotency-key-reused
+                title: A request with this Idempotency-Key is in progress
+                status: 409
+                detail: The original request is still being processed. Retry after a short delay.
+                code: IDEMPOTENCY_KEY_REUSED
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: true
+    PreconditionFailed:
+      description: >-
+        The `If-Match` ETag did not match the current lesson version. The current version
+        is returned in `current_version`; re-fetch, re-apply, and retry with a fresh
+        `If-Match`.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            version_mismatch:
+              summary: Stale If-Match.
+              value:
+                type: https://scorsync.example.com/errors/version-mismatch
+                title: Lesson version mismatch
+                status: 412
+                detail: The lesson was modified since you last read it. Current version is 5.
+                code: VERSION_MISMATCH
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                current_version: 5
+    UnprocessableEntity:
+      description: >-
+        The request was well-formed but failed validation or a business rule.
+        `VALIDATION_FAILED` (including missing required `Idempotency-Key`/`If-Match`, or a
+        naive/offset-less timestamp), `OUTSIDE_BUSINESS_HOURS`, `FACILITY_FEE_ACK_REQUIRED`,
+        or `LATE_BOOKING_ACK_REQUIRED`.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            validation_failed:
+              summary: Field-level validation failed (here, a naive timestamp).
+              value:
+                type: https://scorsync.example.com/errors/validation-failed
+                title: Validation failed
+                status: 422
+                detail: One or more fields are invalid.
+                code: VALIDATION_FAILED
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                errors:
+                  scheduled_at:
+                    - A timezone offset is required, e.g. 2026-08-04T14:00:00-07:00.
+            outside_business_hours:
+              summary: The requested time is outside 07:00-22:00 Pacific.
+              value:
+                type: https://scorsync.example.com/errors/outside-business-hours
+                title: Outside business hours
+                status: 422
+                detail: Lessons may only be booked between 07:00 and 22:00 Pacific.
+                code: OUTSIDE_BUSINESS_HOURS
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                errors:
+                  scheduled_at:
+                    - Start time must be between 07:00 and 22:00 Pacific.
+            facility_fee_ack_required:
+              summary: fee_acknowledged was not true.
+              value:
+                type: https://scorsync.example.com/errors/facility-fee-ack-required
+                title: Facility fee acknowledgement required
+                status: 422
+                detail: You must acknowledge the facility fee (fee_acknowledged=true) to book.
+                code: FACILITY_FEE_ACK_REQUIRED
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                errors:
+                  fee_acknowledged:
+                    - This field must be true.
+            late_booking_ack_required:
+              summary: A late booking was not acknowledged.
+              value:
+                type: https://scorsync.example.com/errors/late-booking-ack-required
+                title: Late-booking acknowledgement required
+                status: 422
+                detail: This is a late booking; set late_booking_acknowledged=true to proceed.
+                code: LATE_BOOKING_ACK_REQUIRED
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                errors:
+                  late_booking_acknowledged:
+                    - This field must be true for a late booking.
+    RateLimited:
+      description: The per-token rate limit was exceeded.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/RateLimitLimit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/RateLimitRemaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/RateLimitReset'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetails'
+          examples:
+            rate_limited:
+              summary: Too many requests.
+              value:
+                type: https://scorsync.example.com/errors/rate-limited
+                title: Too many requests
+                status: 429
+                detail: Rate limit exceeded. Retry after the interval in Retry-After.
+                code: RATE_LIMITED
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: true
+
+  schemas:
+    ErrorCode:
+      type: string
+      description: |
+        The fixed application error-code taxonomy. **Exactly these 13 values** — no others.
+        (`ATHLETE_AMBIGUOUS` is **client-surfaced**: the server always returns a plain 200
+        candidate list from `GET /athletes`; a client/CLI/MCP resolving a name to a single
+        athlete raises it when the search returns more than one match. The server never sets
+        it as an HTTP status, and it is never a write error. No operation emits it in a
+        problem document.)
+      enum:
+        - VALIDATION_FAILED
+        - ATHLETE_NOT_FOUND
+        - ATHLETE_AMBIGUOUS
+        - LESSON_NOT_FOUND
+        - SLOT_CONFLICT
+        - OUTSIDE_BUSINESS_HOURS
+        - VERSION_MISMATCH
+        - IDEMPOTENCY_KEY_REUSED
+        - INSUFFICIENT_SCOPE
+        - FORBIDDEN
+        - RATE_LIMITED
+        - FACILITY_FEE_ACK_REQUIRED
+        - LATE_BOOKING_ACK_REQUIRED
+
+    Scope:
+      type: string
+      description: A Sanctum token ability (scope).
+      enum:
+        - lessons:read
+        - lessons:write
+        - lessons:cancel
+        - lessons:mark-paid
+        - athletes:read
+        - athletes:create
+        - balances:read
+        - audit:read
+
+    DurationMinutes:
+      type: integer
+      description: >-
+        Lesson duration in minutes. The current conflict window supports up to 120.
+        `45` is included because the application has always accepted it (the web
+        create/update validation is `in:30,45,60,90,120`) and existing rows use it;
+        its omission from the original Phase 1 enum was an error in this document, not
+        a data problem.
+      enum: [30, 45, 60, 90, 120]
+
+    MembershipStatus:
+      type: string
+      description: Athlete membership status.
+      enum:
+        - unknown
+        - member
+        - not_member
+
+    Source:
+      type: string
+      description: The originating surface of a write, recorded on the audit event.
+      enum:
+        - web
+        - api
+        - filament
+        - console
+
+    Rfc3339DateTime:
+      type: string
+      format: date-time
+      description: >-
+        RFC 3339 timestamp with an **explicit UTC offset that is required on input and
+        always present on output** (e.g. `2026-08-04T14:00:00-07:00`). Naive / offset-less
+        input is rejected with 422 VALIDATION_FAILED. Output is always emitted with an
+        explicit Pacific (`America/Los_Angeles`) offset.
+
+
+        Input is validated as **strict RFC 3339**, not "anything a date parser accepts":
+        seconds are required (`...T14:00Z` is ISO 8601, not RFC 3339), the offset must be
+        `Z` or `±HH:MM` (the basic forms `+0200` / `+02` are rejected), and an impossible
+        date or time (`2026-02-30`, `14:60:00`) is rejected rather than rolled over. `T`/`t`
+        and `Z`/`z` are both accepted — ABNF literals are case-insensitive.
+      examples:
+        - '2026-08-04T14:00:00-07:00'
+
+    ProblemDetails:
+      type: object
+      description: RFC 9457 problem detail. Served as `application/problem+json`.
+      required:
+        - type
+        - title
+        - status
+        - code
+        - request_id
+        - retryable
+      properties:
+        type:
+          type: string
+          format: uri
+          description: A URI identifying the problem type.
+          examples:
+            - https://scorsync.example.com/errors/slot-conflict
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+        status:
+          type: integer
+          description: The HTTP status code.
+          minimum: 100
+          maximum: 599
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        request_id:
+          type: string
+          description: Correlation id; matches the `X-Request-Id` response header.
+        retryable:
+          type: boolean
+          description: >-
+            Whether an identical retry may succeed later (e.g. rate limiting or an
+            in-progress idempotent request). Definitive client errors are not retryable.
+        errors:
+          type:
+            - object
+            - 'null'
+          description: Field-level validation messages, keyed by field name.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        current_version:
+          type:
+            - integer
+            - 'null'
+          description: On VERSION_MISMATCH (412), the lesson's current version.
+
+    SlotConflictProblem:
+      description: >-
+        A `ProblemDetails` whose `code` is constrained to `SLOT_CONFLICT`, so a generated
+        client's 409 error type for this response is exactly that one code.
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          properties:
+            code:
+              const: SLOT_CONFLICT
+
+    IdempotencyConflictProblem:
+      description: >-
+        A `ProblemDetails` whose `code` is constrained to `IDEMPOTENCY_KEY_REUSED`, so a
+        generated client's 409 error type for this response is exactly that one code.
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          properties:
+            code:
+              const: IDEMPOTENCY_KEY_REUSED
+
+    AthleteRef:
+      type: object
+      description: Minimal athlete reference embedded in a lesson (safe for every role).
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          description: Full name (`first_name last_name`).
+
+    AthleteCoachView:
+      type: object
+      description: >-
+        Athlete as seen by a Coach/Staff token. **Exactly these four fields** — never
+        `notes` or other metadata (enforced by API Resources).
+      additionalProperties: false
+      required: [id, name, waiver_signed, membership_status]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          description: Full name (`first_name last_name`).
+        waiver_signed:
+          type: boolean
+          description: Read-only; no scope can set it.
+        membership_status:
+          $ref: '#/components/schemas/MembershipStatus'
+
+    AthleteAdminView:
+      type: object
+      description: Athlete as seen by an Admin/Management token (full record, including notes).
+      required: [id, name, first_name, last_name, waiver_signed, membership_status, notes, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          description: Full name (`first_name last_name`).
+        first_name:
+          type: string
+        last_name:
+          type: string
+        waiver_signed:
+          type: boolean
+          description: Read-only; no scope can set it.
+        membership_status:
+          $ref: '#/components/schemas/MembershipStatus'
+        notes:
+          type:
+            - string
+            - 'null'
+          description: Admin/Management only; never serialized to a coach token.
+        created_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        updated_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+
+    Athlete:
+      description: >-
+        An athlete. The serialized shape depends on the caller's role, not scope:
+        Admin/Management receive `AthleteAdminView` (with `notes`); Coach/Staff receive
+        `AthleteCoachView` (no `notes`).
+      oneOf:
+        - $ref: '#/components/schemas/AthleteAdminView'
+        - $ref: '#/components/schemas/AthleteCoachView'
+
+    Lesson:
+      type: object
+      description: A private lesson.
+      required:
+        - id
+        - coach_id
+        - athletes
+        - scheduled_at
+        - duration_minutes
+        - is_member
+        - is_late_booking
+        - cost_cents
+        - effective_cost_cents
+        - late_fee_waived
+        - version
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+        coach_id:
+          type: integer
+          description: The lesson's staff (coach) user id. Distinct from the acting user.
+        coach_name:
+          type:
+            - string
+            - 'null'
+        athletes:
+          type: array
+          description: Athletes on the lesson (may be empty only for legacy Filament/console records).
+          items:
+            $ref: '#/components/schemas/AthleteRef'
+        student_name:
+          type:
+            - string
+            - 'null'
+          description: Legacy free-text student name for athlete-less records; null when athletes are attached.
+        scheduled_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        duration_minutes:
+          $ref: '#/components/schemas/DurationMinutes'
+        is_member:
+          type: boolean
+          description: Membership determination at booking time (all-athletes-enrolled rule).
+        is_late_booking:
+          type: boolean
+        observer:
+          type:
+            - string
+            - 'null'
+        notes:
+          type:
+            - string
+            - 'null'
+        cost_cents:
+          type: integer
+          description: Raw stored facility fee in cents, before override/waiver.
+        effective_cost_cents:
+          type: integer
+          description: >-
+            The authoritative amount owed, via `effectiveCostCents()` (honours
+            `cost_override_cents` and `late_fee_waived`). Balances aggregate this, never
+            `cost_cents`.
+        cost_override_cents:
+          type:
+            - integer
+            - 'null'
+        cost_override_reason:
+          type:
+            - string
+            - 'null'
+        late_fee_waived:
+          type: boolean
+        paid_at:
+          oneOf:
+            - $ref: '#/components/schemas/Rfc3339DateTime'
+            - type: 'null'
+          description: When the lesson was marked paid; null if unpaid.
+        cancelled_at:
+          oneOf:
+            - $ref: '#/components/schemas/Rfc3339DateTime'
+            - type: 'null'
+          description: Soft-delete timestamp; null unless cancelled.
+        version:
+          type: integer
+          description: Optimistic-concurrency version. Drives the strong ETag `"lesson-<id>-v<version>"`.
+          minimum: 1
+        created_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        updated_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+
+    PricingQuote:
+      type: object
+      description: Advisory facility-fee quote. Never binding; recalculated at create time.
+      required:
+        - duration_minutes
+        - athlete_ids
+        - scheduled_at
+        - is_member
+        - is_late_booking
+        - cost_cents
+        - currency
+        - hourly_rate_cents
+        - late_multiplier_applied
+        - breakdown
+        - quoted_at
+        - advisory
+      properties:
+        duration_minutes:
+          $ref: '#/components/schemas/DurationMinutes'
+        athlete_ids:
+          type: array
+          items:
+            type: integer
+        scheduled_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        is_member:
+          type: boolean
+          description: All-athletes-enrolled membership determination.
+        is_late_booking:
+          type: boolean
+        cost_cents:
+          type: integer
+          description: Computed facility fee in cents.
+        currency:
+          type: string
+          const: USD
+        hourly_rate_cents:
+          type: integer
+          description: 1000 for members, 2000 for non-members.
+        late_multiplier_applied:
+          type: boolean
+          description: Whether the x2 late surcharge was applied.
+        breakdown:
+          type: string
+          description: Human-readable explanation of the computed fee.
+        quoted_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        advisory:
+          type: boolean
+          const: true
+          description: Always true. The fee is recalculated at create; this quote is not trusted as truth.
+
+    Availability:
+      type: object
+      description: Bookable windows for a coach on a date, in America/Los_Angeles.
+      required:
+        - date
+        - coach_id
+        - duration_minutes
+        - timezone
+        - business_hours
+        - slots
+      properties:
+        date:
+          type: string
+          format: date
+        coach_id:
+          type: integer
+        coach_name:
+          type:
+            - string
+            - 'null'
+        duration_minutes:
+          $ref: '#/components/schemas/DurationMinutes'
+        timezone:
+          type: string
+          const: America/Los_Angeles
+        business_hours:
+          type: object
+          required: [start, end]
+          properties:
+            start:
+              type: string
+              description: Local (Pacific) business-hours start, HH:MM.
+              examples: ['07:00']
+            end:
+              type: string
+              description: Local (Pacific) business-hours end, HH:MM.
+              examples: ['22:00']
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/AvailabilitySlot'
+
+    AvailabilitySlot:
+      type: object
+      required: [start, end, is_late_booking]
+      properties:
+        start:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        end:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        is_late_booking:
+          type: boolean
+          description: True if starting a lesson at this slot counts as a late booking.
+
+    Balance:
+      type: object
+      description: >-
+        Unpaid facility fees a coach owes the gym (computed from `effectiveCostCents()`).
+        This is money the coach owes the gym, NOT money families owe the coach.
+      required: [coach_id, unpaid_cents, currency, unpaid_lesson_count]
+      properties:
+        coach_id:
+          type: integer
+        coach_name:
+          type:
+            - string
+            - 'null'
+        unpaid_cents:
+          type: integer
+          description: Sum of `effective_cost_cents` over the coach's unpaid lessons.
+        currency:
+          type: string
+          const: USD
+        unpaid_lesson_count:
+          type: integer
+
+    CursorPageMeta:
+      type: object
+      description: >-
+        Keyset-pagination state for one page. `next_cursor` is opaque — pass it back
+        verbatim as the `cursor` query parameter; never construct or parse one.
+      required: [limit, has_more, next_cursor]
+      properties:
+        limit:
+          type: integer
+          description: The page size actually applied (the request's `limit`, or the default).
+          minimum: 1
+          maximum: 200
+        has_more:
+          type: boolean
+          description: True when at least one further page exists.
+        next_cursor:
+          type:
+            - string
+            - 'null'
+          description: Cursor for the next page; null on the last page.
+
+    AuditEvent:
+      type: object
+      description: An append-only audit event. Never updated or deleted.
+      required:
+        - id
+        - actor_type
+        - source
+        - action
+        - auditable_type
+        - auditable_id
+        - changes
+        - request_id
+        - created_at
+      properties:
+        id:
+          type: string
+          description: ULID.
+        actor_id:
+          type:
+            - integer
+            - 'null'
+        actor_type:
+          type:
+            - string
+            - 'null'
+          description: >-
+            Morph class of the actor. **Null for a console-sourced write**, which has no
+            user actor — the key is always present, the value is not fabricated.
+        token_id:
+          type:
+            - integer
+            - 'null'
+          description: Nullable; a revoked token sets this null (ON DELETE SET NULL) rather than deleting history.
+        token_fingerprint:
+          type:
+            - string
+            - 'null'
+        source:
+          $ref: '#/components/schemas/Source'
+        action:
+          type: string
+          description: e.g. `lesson.created`, `lesson.cancelled`, `athlete.created`.
+        auditable_type:
+          type: string
+        auditable_id:
+          type:
+            - string
+            - 'null'
+        changes:
+          type: object
+          description: JSON diff / recorded facts (includes acknowledgement facts on lesson creates).
+          additionalProperties: true
+        request_id:
+          type:
+            - string
+            - 'null'
+          description: >-
+            Correlation id of the request that caused the write. **Null when there was no
+            HTTP request** (console/scheduled writes); null truthfully means "no
+            correlation existed" and is never replaced with a generated id.
+        ip:
+          type:
+            - string
+            - 'null'
+        user_agent:
+          type:
+            - string
+            - 'null'
+        created_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+
+    Me:
+      type: object
+      description: The authenticated identity and the current token's granted scopes.
+      required: [id, name, email, roles, scopes, token]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        roles:
+          type: array
+          items:
+            type: string
+          description: e.g. Admin, Management, Staff, Coach.
+        scopes:
+          type: array
+          description: Abilities granted to the current token.
+          items:
+            $ref: '#/components/schemas/Scope'
+        token:
+          $ref: '#/components/schemas/TokenInfo'
+
+    TokenInfo:
+      type: object
+      description: Non-secret metadata about the current token. The secret is never returned.
+      required: [id, name, fingerprint]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        fingerprint:
+          type: string
+          description: Non-secret display prefix (first 6 chars of the random part), e.g. `a1b2c3`.
+        last_used_at:
+          oneOf:
+            - $ref: '#/components/schemas/Rfc3339DateTime'
+            - type: 'null'
+        expires_at:
+          oneOf:
+            - $ref: '#/components/schemas/Rfc3339DateTime'
+            - type: 'null'
+
+    CreateLessonRequest:
+      type: object
+      description: >-
+        Create-lesson body. There is deliberately **no athlete name field** — only
+        `athlete_ids`. Server computes membership and cost; clients never send a fee.
+      additionalProperties: false
+      required:
+        - coach_id
+        - athlete_ids
+        - scheduled_at
+        - duration_minutes
+        - fee_acknowledged
+      properties:
+        coach_id:
+          type: integer
+          description: The lesson's staff (coach). Distinct from the acting user; the actor is authorized to book for this coach.
+        athlete_ids:
+          type: array
+          description: Athlete ids on the lesson. Required and non-empty on the API. (The empty-array tolerance is a filament/console-only path, not exposed here.)
+          items:
+            type: integer
+          minItems: 1
+        scheduled_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        duration_minutes:
+          $ref: '#/components/schemas/DurationMinutes'
+        fee_acknowledged:
+          type: boolean
+          description: >-
+            Must be sent as `true`; a missing or `false` value is rejected with 422
+            FACILITY_FEE_ACK_REQUIRED. Recorded in the audit event.
+        late_booking_acknowledged:
+          type: boolean
+          default: false
+          description: Must be `true` when the booking is late; else 422 LATE_BOOKING_ACK_REQUIRED. Recorded in the audit event.
+        notes:
+          type:
+            - string
+            - 'null'
+        observer:
+          type:
+            - string
+            - 'null'
+
+    UpdateLessonRequest:
+      type: object
+      description: >-
+        Partial update. **No athlete name field** — reassign via `athlete_ids`. An omitted
+        field is left unchanged; a field sent as `null` clears it (nullable fields only).
+        All fields optional; `If-Match` is required at the header level.
+      additionalProperties: false
+      properties:
+        coach_id:
+          type: integer
+        athlete_ids:
+          type: array
+          items:
+            type: integer
+          minItems: 1
+        scheduled_at:
+          $ref: '#/components/schemas/Rfc3339DateTime'
+        duration_minutes:
+          $ref: '#/components/schemas/DurationMinutes'
+        notes:
+          type:
+            - string
+            - 'null'
+          description: Omit to leave unchanged; send null to clear.
+        observer:
+          type:
+            - string
+            - 'null'
+          description: Omit to leave unchanged; send null to clear.
+        late_booking_acknowledged:
+          type: boolean
+          description: Required true when the update moves the lesson to a late start; else 422 LATE_BOOKING_ACK_REQUIRED.
+
+    CancelLessonRequest:
+      type: object
+      description: Optional cancel body. `If-Match` is required at the header level.
+      additionalProperties: false
+      properties:
+        reason:
+          type:
+            - string
+            - 'null'
+          description: Optional human-readable cancellation reason (recorded in the audit event).
+
+    MarkLessonPaidRequest:
+      type: object
+      description: Optional mark-paid body. `If-Match` is required at the header level.
+      additionalProperties: false
+      properties:
+        paid_at:
+          oneOf:
+            - $ref: '#/components/schemas/Rfc3339DateTime'
+            - type: 'null'
+          description: Payment time; defaults to now (server time) when omitted or null.
+
+    CreateAthleteRequest:
+      type: object
+      description: >-
+        Create-athlete body. `waiver_signed` is intentionally **not** accepted — waiver
+        status is read-only through every scope. `notes` is honoured for Admin/Management
+        only.
+      additionalProperties: false
+      required:
+        - first_name
+        - last_name
+      properties:
+        first_name:
+          type: string
+          minLength: 1
+        last_name:
+          type: string
+          minLength: 1
+        membership_status:
+          $ref: '#/components/schemas/MembershipStatus'
+        notes:
+          type:
+            - string
+            - 'null'
+          description: Admin/Management only; ignored for Coach/Staff tokens (which cannot read notes).

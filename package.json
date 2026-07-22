@@ -1,0 +1,44 @@
+{
+  "name": "@scorsync/private-lessons-clients",
+  "version": "0.1.0",
+  "private": false,
+  "description": "MCP server and CLI for the ScorSync private-lessons REST API. The HTTP client is generated from contract/openapi.yaml.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "bin": {
+    "scorsync": "./dist/cli/index.js",
+    "scorsync-mcp": "./dist/mcp/index.js"
+  },
+  "files": [
+    "dist",
+    "contract",
+    "README.md"
+  ],
+  "scripts": {
+    "generate": "openapi-typescript contract/openapi.yaml --output src/generated/openapi.ts --root-types",
+    "generate:check": "npm run generate && git diff --exit-code -- src/generated",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run generate && npm run build && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.0",
+    "commander": "^14.0.2",
+    "openapi-fetch": "^0.15.0",
+    "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "@napi-rs/keyring": "^1.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.1",
+    "openapi-typescript": "^7.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
