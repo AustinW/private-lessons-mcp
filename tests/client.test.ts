@@ -5,14 +5,14 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { normaliseBaseUrl, ScorSyncClient } from '../src/core/client.js';
+import { normaliseBaseUrl, PrivateLessonsClient } from '../src/core/client.js';
 import { formatETag, parseETag, resolveIdempotencyKey, resolveIfMatch } from '../src/core/concurrency.js';
-import { ScorSyncError } from '../src/core/errors.js';
+import { PrivateLessonsError } from '../src/core/errors.js';
 import { Rfc3339FormatError } from '../src/core/time.js';
 import { makeAthlete, makeLesson, MockApi, problem } from './helpers/mock-api.js';
 
-function clientFor(api: MockApi): ScorSyncClient {
-  return new ScorSyncClient({ baseUrl: api.baseUrl, token: 'test-token', fetch: api.fetch });
+function clientFor(api: MockApi): PrivateLessonsClient {
+  return new PrivateLessonsClient({ baseUrl: api.baseUrl, token: 'test-token', fetch: api.fetch });
 }
 
 describe('base URL handling', () => {
@@ -211,7 +211,7 @@ describe('timestamp boundary', () => {
 });
 
 describe('error surfacing', () => {
-  it('turns every problem+json response into a typed ScorSyncError', async () => {
+  it('turns every problem+json response into a typed PrivateLessonsError', async () => {
     const cases: Array<[number, string, number]> = [
       [403, 'INSUFFICIENT_SCOPE', 11],
       [403, 'FORBIDDEN', 12],
@@ -227,16 +227,16 @@ describe('error surfacing', () => {
       const api = new MockApi().on('GET /lessons/{id}', () => problem(status, code, 'nope'));
       const err = await clientFor(api)
         .getLesson(42)
-        .catch((e: unknown) => e as ScorSyncError);
-      expect(err).toBeInstanceOf(ScorSyncError);
-      expect((err as ScorSyncError).code).toBe(code);
-      expect((err as ScorSyncError).exitCode).toBe(exit);
+        .catch((e: unknown) => e as PrivateLessonsError);
+      expect(err).toBeInstanceOf(PrivateLessonsError);
+      expect((err as PrivateLessonsError).code).toBe(code);
+      expect((err as PrivateLessonsError).exitCode).toBe(exit);
     }
   });
 
   it('reports an unreachable host as NETWORK_ERROR', async () => {
-    const client = new ScorSyncClient({
-      baseUrl: 'https://scorsync.test/api/v1',
+    const client = new PrivateLessonsClient({
+      baseUrl: 'https://private-lessons.test/api/v1',
       token: 't',
       fetch: () => Promise.reject(new TypeError('fetch failed')),
     });

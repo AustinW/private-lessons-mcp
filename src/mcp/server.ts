@@ -1,10 +1,10 @@
 /**
- * The ScorSync MCP server.
+ * The Private Lessons MCP server.
  *
  * Design rules, from the spec:
  *
  *  - **Task-specific tools only. There is deliberately no generic HTTP tool.** A
- *    `scorsync_request(method, path, body)` escape hatch would let a model invent
+ *    `private_lessons_request(method, path, body)` escape hatch would let a model invent
  *    endpoints, skip the required `Idempotency-Key`/`If-Match` headers, and bypass
  *    every guard below. The 12 tools here are the entire surface.
  *  - **There is no token tool.** Minting, reading or rotating a token is impossible
@@ -14,7 +14,7 @@
  *    which returns the advisory quote plus an availability/conflict preview and writes
  *    nothing.
  *  - **Writes take `athlete_ids` only.** There is no name field on any write tool, so a
- *    tool can never guess an identity. `scorsync_search_athletes` is the only way to go
+ *    tool can never guess an identity. `private_lessons_search_athletes` is the only way to go
  *    from a name to an id, and it reports the `ATHLETE_AMBIGUOUS` condition (client-
  *    surfaced, never an HTTP error) when the search matches more than one athlete.
  */
@@ -28,26 +28,26 @@ import {
   type DurationMinutes,
   type Lesson,
   type LessonResult,
-  type ScorSyncClient,
+  type PrivateLessonsClient,
 } from '../core/client.js';
 import { formatETag, parseETag } from '../core/concurrency.js';
-import { ScorSyncError, toScorSyncError } from '../core/errors.js';
+import { PrivateLessonsError, toPrivateLessonsError } from '../core/errors.js';
 import { preflightLesson } from '../core/preflight.js';
 import { formatPacific, TENANT_TIMEZONE } from '../core/time.js';
 
 export const TOOL_NAMES = [
-  'scorsync_list_lessons',
-  'scorsync_get_lesson',
-  'scorsync_check_availability',
-  'scorsync_get_quote',
-  'scorsync_search_athletes',
-  'scorsync_create_athlete',
-  'scorsync_create_lesson',
-  'scorsync_update_lesson',
-  'scorsync_cancel_lesson',
-  'scorsync_mark_lesson_paid',
-  'scorsync_get_balance',
-  'scorsync_list_audit_events',
+  'private_lessons_list_lessons',
+  'private_lessons_get_lesson',
+  'private_lessons_check_availability',
+  'private_lessons_get_quote',
+  'private_lessons_search_athletes',
+  'private_lessons_create_athlete',
+  'private_lessons_create_lesson',
+  'private_lessons_update_lesson',
+  'private_lessons_cancel_lesson',
+  'private_lessons_mark_lesson_paid',
+  'private_lessons_get_balance',
+  'private_lessons_list_audit_events',
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -63,7 +63,7 @@ function ok(payload: unknown): ToolResult {
 }
 
 function fail(err: unknown): ToolResult {
-  const error = toScorSyncError(err);
+  const error = toPrivateLessonsError(err);
   return {
     isError: true,
     content: [{ type: 'text', text: JSON.stringify(error.toJSON(), null, 2) }],
@@ -125,7 +125,7 @@ const athleteIdsSchema = z
   .min(1)
   .describe(
     'Explicit athlete ids. THERE IS NO NAME FIELD — this tool never resolves a name. ' +
-      'Use scorsync_search_athletes first; if it returns more than one candidate that is ' +
+      'Use private_lessons_search_athletes first; if it returns more than one candidate that is ' +
       'the ATHLETE_AMBIGUOUS condition and you MUST ask the user which one before writing.',
   );
 
@@ -151,7 +151,7 @@ const ifMatchSchema = z
   .string()
   .optional()
   .describe(
-    'The strong ETag from a prior scorsync_get_lesson, verbatim (e.g. "lesson-42-v3"). ' +
+    'The strong ETag from a prior private_lessons_get_lesson, verbatim (e.g. "lesson-42-v3"). ' +
       'REQUIRED by the API. If omitted, this tool fetches the lesson first and uses its ' +
       'current ETag — which means it will not detect a concurrent edit made before that ' +
       'fetch. Pass the ETag you actually read to get the concurrency guarantee. A stale ' +
@@ -168,14 +168,14 @@ const ifMatchSchema = z
  * decision to re-apply belongs to whoever is driving.
  */
 async function resolveIfMatchFor(
-  client: ScorSyncClient,
+  client: PrivateLessonsClient,
   lessonId: number,
   supplied: string | undefined,
 ): Promise<{ ifMatch: string; refetched: boolean; lesson: Lesson | null }> {
   if (supplied) {
     const value = supplied.trim();
     if (/^W\//i.test(value) || value === '*') {
-      throw new ScorSyncError(
+      throw new PrivateLessonsError(
         'VALIDATION_FAILED',
         'If-Match must be a strong ETag; weak validators and "*" are rejected.',
         {
@@ -187,13 +187,13 @@ async function resolveIfMatchFor(
     }
     const normalised = parseETag(value) ? value : parseETag(`"${value}"`) ? `"${value}"` : null;
     if (!normalised) {
-      throw new ScorSyncError(
+      throw new PrivateLessonsError(
         'VALIDATION_FAILED',
         `Unrecognised If-Match value ${JSON.stringify(supplied)}.`,
         {
           detail:
             `Unrecognised If-Match value ${JSON.stringify(supplied)}. ` +
-            'Use the ETag from scorsync_get_lesson, e.g. "lesson-42-v3".',
+            'Use the ETag from private_lessons_get_lesson, e.g. "lesson-42-v3".',
         },
       );
     }
@@ -209,7 +209,7 @@ async function resolveIfMatchFor(
 }
 
 export interface BuildServerOptions {
-  client: ScorSyncClient;
+  client: PrivateLessonsClient;
   name?: string;
   version?: string;
 }
@@ -217,14 +217,14 @@ export interface BuildServerOptions {
 export function buildServer(options: BuildServerOptions): McpServer {
   const { client } = options;
   const server = new McpServer({
-    name: options.name ?? 'scorsync-private-lessons',
+    name: options.name ?? 'private-lessons',
     version: options.version ?? '0.1.0',
   });
 
   // ---------------------------------------------------------------- reads
 
   server.registerTool(
-    'scorsync_list_lessons',
+    'private_lessons_list_lessons',
     {
       title: 'List private lessons',
       description:
@@ -259,7 +259,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_get_lesson',
+    'private_lessons_get_lesson',
     {
       title: 'Get one private lesson',
       description:
@@ -273,7 +273,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_check_availability',
+    'private_lessons_check_availability',
     {
       title: 'Check bookable windows for a coach',
       description:
@@ -312,7 +312,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_get_quote',
+    'private_lessons_get_quote',
     {
       title: 'Get an advisory facility-fee quote',
       description:
@@ -348,7 +348,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_search_athletes',
+    'private_lessons_search_athletes',
     {
       title: 'Search athletes by name (step 1 of the two-step write flow)',
       description:
@@ -398,14 +398,14 @@ export function buildServer(options: BuildServerOptions): McpServer {
               candidates: [],
               next_step:
                 `No athlete matches "${query}". Confirm the spelling with the user, or ` +
-                'create the athlete explicitly with scorsync_create_athlete.',
+                'create the athlete explicitly with private_lessons_create_athlete.',
             };
         }
       }),
   );
 
   server.registerTool(
-    'scorsync_get_balance',
+    'private_lessons_get_balance',
     {
       title: 'Get unpaid facility-fee balances',
       description:
@@ -436,7 +436,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_list_audit_events',
+    'private_lessons_list_audit_events',
     {
       title: 'List audit-log events',
       description:
@@ -478,12 +478,12 @@ export function buildServer(options: BuildServerOptions): McpServer {
   // --------------------------------------------------------------- writes
 
   server.registerTool(
-    'scorsync_create_athlete',
+    'private_lessons_create_athlete',
     {
       title: 'Create an athlete',
       description:
         'WRITE — SIDE EFFECT: creates a new athlete record in the gym\'s database.\n\n' +
-        'Call scorsync_search_athletes FIRST and confirm with the user that the athlete ' +
+        'Call private_lessons_search_athletes FIRST and confirm with the user that the athlete ' +
         'does not already exist; a near-duplicate record is painful to unpick. Never ' +
         'invent or correct a spelling on the user\'s behalf.\n\n' +
         '`waiver_signed` cannot be set through any scope — waiver status is read-only ' +
@@ -563,7 +563,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_create_lesson',
+    'private_lessons_create_lesson',
     {
       title: 'Book a private lesson',
       description:
@@ -572,7 +572,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
         'RUN WITH dry_run: true FIRST and show the user the advisory quote and the Pacific ' +
         'start time before committing.\n\n' +
         'ATHLETES: `athlete_ids` only. There is no name field. Resolve every name through ' +
-        'scorsync_search_athletes and, if it returns more than one candidate ' +
+        'private_lessons_search_athletes and, if it returns more than one candidate ' +
         '(ATHLETE_AMBIGUOUS), ask the user which one — never guess.\n\n' +
         'ACKNOWLEDGEMENTS: `fee_acknowledged` must be true and represents the coach ' +
         'accepting the facility fee; get real user confirmation before setting it. If the ' +
@@ -653,7 +653,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_update_lesson',
+    'private_lessons_update_lesson',
     {
       title: 'Update / reschedule a private lesson',
       description:
@@ -661,7 +661,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
         'audit event, and sends an update notification to the people involved.\n\n' +
         'RUN WITH dry_run: true FIRST when changing the time or duration.\n\n' +
         'CONCURRENCY: `if_match` is required by the API. Read the lesson with ' +
-        'scorsync_get_lesson and pass its `etag` back verbatim. A stale value returns 412 ' +
+        'private_lessons_get_lesson and pass its `etag` back verbatim. A stale value returns 412 ' +
         'VERSION_MISMATCH with the server\'s current version — re-read, re-apply, and ask ' +
         'the user before overwriting somebody else\'s change. This tool never auto-retries ' +
         'a 412.\n\n' +
@@ -712,7 +712,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
         }
 
         if (Object.keys(body).length === 0) {
-          throw new ScorSyncError('VALIDATION_FAILED', 'Nothing to update.', {
+          throw new PrivateLessonsError('VALIDATION_FAILED', 'Nothing to update.', {
             detail:
               'No mutable field was supplied. An empty PATCH would still bump the version, ' +
               'write an audit event and send a notification, so it is refused here.',
@@ -786,7 +786,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_cancel_lesson',
+    'private_lessons_cancel_lesson',
     {
       title: 'Cancel a private lesson',
       description:
@@ -797,7 +797,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
         'date and time and who it is for, and get an explicit confirmation before ' +
         'cancelling. Do not chain a cancel straight after a search.\n\n' +
         'CONCURRENCY: `if_match` is required by the API — pass the ETag from ' +
-        'scorsync_get_lesson. A stale value returns 412 VERSION_MISMATCH.\n\n' +
+        'private_lessons_get_lesson. A stale value returns 412 VERSION_MISMATCH.\n\n' +
         'An Idempotency-Key is generated automatically, so a retry after a dropped ' +
         'response replays the original cancellation rather than 404-ing on the now ' +
         'soft-deleted lesson. Requires lessons:cancel.',
@@ -869,7 +869,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
   );
 
   server.registerTool(
-    'scorsync_mark_lesson_paid',
+    'private_lessons_mark_lesson_paid',
     {
       title: 'Mark a lesson\'s facility fee as paid',
       description:

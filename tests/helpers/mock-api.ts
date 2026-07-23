@@ -34,7 +34,7 @@ export class MockApi {
 
   private readonly routes = new Map<string, Handler>();
 
-  readonly baseUrl = 'https://scorsync.test/api/v1';
+  readonly baseUrl = 'https://private-lessons.test/api/v1';
 
   on(route: string, handler: Handler): this {
     this.routes.set(route, handler);
@@ -185,7 +185,7 @@ export function problem(
   return {
     status,
     body: {
-      type: `https://scorsync.example.com/errors/${code.toLowerCase().replace(/_/g, '-')}`,
+      type: `https://private-lessons.scorsync.com/errors/${code.toLowerCase().replace(/_/g, '-')}`,
       title: code,
       status,
       detail,

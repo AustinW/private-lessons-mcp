@@ -38,7 +38,7 @@ export type ClientErrorCode =
   | 'ABORTED'
   | 'UNKNOWN_ERROR';
 
-export type ScorSyncErrorCode = ApiErrorCode | ClientErrorCode;
+export type PrivateLessonsErrorCode = ApiErrorCode | ClientErrorCode;
 
 /**
  * Process exit codes.
@@ -73,12 +73,12 @@ export const EXIT_CODES = {
   NO_TOKEN: 17,
   NETWORK_ERROR: 18,
   ABORTED: 19,
-} as const satisfies Record<ScorSyncErrorCode | 'OK', number>;
+} as const satisfies Record<PrivateLessonsErrorCode | 'OK', number>;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
 
 /** Map any error code this client can produce to its documented exit code. */
-export function exitCodeFor(code: ScorSyncErrorCode | undefined): number {
+export function exitCodeFor(code: PrivateLessonsErrorCode | undefined): number {
   if (code && code in EXIT_CODES) {
     return EXIT_CODES[code as keyof typeof EXIT_CODES];
   }
@@ -86,8 +86,8 @@ export function exitCodeFor(code: ScorSyncErrorCode | undefined): number {
 }
 
 /** Base class for every error this client raises deliberately. */
-export class ScorSyncError extends Error {
-  readonly code: ScorSyncErrorCode;
+export class PrivateLessonsError extends Error {
+  readonly code: PrivateLessonsErrorCode;
 
   readonly retryable: boolean;
 
@@ -106,7 +106,7 @@ export class ScorSyncError extends Error {
   readonly retryAfterSeconds: number | undefined;
 
   constructor(
-    code: ScorSyncErrorCode,
+    code: PrivateLessonsErrorCode,
     message: string,
     options: {
       retryable?: boolean;
@@ -120,7 +120,7 @@ export class ScorSyncError extends Error {
     } = {},
   ) {
     super(message, options.cause !== undefined ? { cause: options.cause } : undefined);
-    this.name = 'ScorSyncError';
+    this.name = 'PrivateLessonsError';
     this.code = code;
     this.retryable = options.retryable ?? false;
     this.requestId = options.requestId;
@@ -180,7 +180,7 @@ export class ScorSyncError extends Error {
  * Raised when a name search was asked to resolve to exactly one athlete and matched
  * more than one. This is never an HTTP error — the server answered `200`.
  */
-export class AthleteAmbiguousError extends ScorSyncError {
+export class AthleteAmbiguousError extends PrivateLessonsError {
   readonly candidates: ReadonlyArray<{ id: number; name: string }>;
 
   readonly query: string;
@@ -238,13 +238,13 @@ function parseRetryAfter(value: string | null): number | undefined {
 }
 
 /**
- * Turn an HTTP failure into a `ScorSyncError`.
+ * Turn an HTTP failure into a `PrivateLessonsError`.
  *
  * `body` is whatever the response carried. A well-behaved API always sends an RFC 9457
  * problem document; this function stays defensive because a proxy, a 502 page, or a
  * `401` from the auth layer (which is outside the taxonomy) may not.
  */
-export function problemToError(status: number, body: unknown, headers?: Headers): ScorSyncError {
+export function problemToError(status: number, body: unknown, headers?: Headers): PrivateLessonsError {
   const problem = (body ?? {}) as Partial<ProblemDetails> & Record<string, unknown>;
   const requestId =
     (typeof problem.request_id === 'string' ? problem.request_id : undefined) ??
@@ -253,18 +253,18 @@ export function problemToError(status: number, body: unknown, headers?: Headers)
   const retryAfterSeconds = parseRetryAfter(headers?.get('retry-after') ?? null);
 
   if (status === 401) {
-    return new ScorSyncError('UNAUTHENTICATED', 'Authentication failed.', {
+    return new PrivateLessonsError('UNAUTHENTICATED', 'Authentication failed.', {
       status,
       requestId,
       detail:
         typeof problem.detail === 'string'
           ? problem.detail
-          : 'The token is missing, invalid, expired or revoked. Run `scorsync auth set-token`.',
+          : 'The token is missing, invalid, expired or revoked. Run `private-lessons auth set-token`.',
     });
   }
 
   if (!isApiErrorCode(problem.code)) {
-    return new ScorSyncError('UNKNOWN_ERROR', `Unexpected HTTP ${status} response.`, {
+    return new PrivateLessonsError('UNKNOWN_ERROR', `Unexpected HTTP ${status} response.`, {
       status,
       requestId,
       retryAfterSeconds,
@@ -282,7 +282,7 @@ export function problemToError(status: number, body: unknown, headers?: Headers)
       ? (problem.errors as Record<string, string[]>)
       : undefined;
 
-  return new ScorSyncError(problem.code, problem.title ?? problem.code, {
+  return new PrivateLessonsError(problem.code, problem.title ?? problem.code, {
     status,
     requestId,
     retryAfterSeconds,
@@ -294,13 +294,13 @@ export function problemToError(status: number, body: unknown, headers?: Headers)
   });
 }
 
-/** Normalise any thrown value into a `ScorSyncError`. */
-export function toScorSyncError(err: unknown): ScorSyncError {
-  if (err instanceof ScorSyncError) return err;
+/** Normalise any thrown value into a `PrivateLessonsError`. */
+export function toPrivateLessonsError(err: unknown): PrivateLessonsError {
+  if (err instanceof PrivateLessonsError) return err;
   if (err instanceof Error) {
     // An abort is a decision, not a transport failure — never report it as one.
     if (err.name === 'AbortError' || /\baborted\b/i.test(err.message)) {
-      return new ScorSyncError('ABORTED', err.message, { detail: err.message, cause: err });
+      return new PrivateLessonsError('ABORTED', err.message, { detail: err.message, cause: err });
     }
     // fetch surfaces connection problems as TypeError('fetch failed') with a cause.
     const isNetwork =
@@ -308,11 +308,11 @@ export function toScorSyncError(err: unknown): ScorSyncError {
       /fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN/i.test(
         `${err.message} ${String((err as { cause?: unknown }).cause ?? '')}`,
       );
-    return new ScorSyncError(
+    return new PrivateLessonsError(
       isNetwork ? 'NETWORK_ERROR' : 'UNKNOWN_ERROR',
       err.message,
       { detail: err.message, cause: err },
     );
   }
-  return new ScorSyncError('UNKNOWN_ERROR', String(err), { detail: String(err) });
+  return new PrivateLessonsError('UNKNOWN_ERROR', String(err), { detail: String(err) });
 }

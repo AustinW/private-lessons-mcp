@@ -410,7 +410,7 @@ export interface components {
             /**
              * Format: uri
              * @description A URI identifying the problem type.
-             * @example https://scorsync.example.com/errors/slot-conflict
+             * @example https://private-lessons.scorsync.com/errors/slot-conflict
              */
             type: string;
             /** @description Short, human-readable summary of the problem type. */

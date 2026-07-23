@@ -61,7 +61,7 @@ beforeAll(async () => {
     }
     if (path === '/lessons/999' && req.method === 'GET') {
       send(404, {
-        type: 'https://scorsync.example.com/errors/lesson-not-found',
+        type: 'https://private-lessons.scorsync.com/errors/lesson-not-found',
         title: 'Lesson not found',
         status: 404,
         detail: 'No lesson with id 999 is visible to this token.',
@@ -93,7 +93,7 @@ beforeAll(async () => {
     }
     if (path === '/balances' && req.method === 'GET') {
       send(403, {
-        type: 'https://scorsync.example.com/errors/insufficient-scope',
+        type: 'https://private-lessons.scorsync.com/errors/insufficient-scope',
         title: 'Insufficient scope',
         status: 403,
         detail: "This token is missing the required scope 'balances:read'.",
@@ -131,8 +131,8 @@ async function run(args: string[], env: Record<string, string> = {}): Promise<Ru
     const { stdout, stderr } = await execFileAsync(process.execPath, [CLI, ...args], {
       env: {
         ...process.env,
-        SCORSYNC_TOKEN: 'test-token',
-        SCORSYNC_BASE_URL: baseUrl,
+        PRIVATE_LESSONS_TOKEN: 'test-token',
+        PRIVATE_LESSONS_BASE_URL: baseUrl,
         ...env,
       },
     });
@@ -171,8 +171,8 @@ describe('exit codes are mapped from the API error codes', () => {
 
   it('exits 17 when no token is configured anywhere', async () => {
     const result = await run(['lessons', 'list'], {
-      SCORSYNC_TOKEN: '',
-      SCORSYNC_PROFILE: 'a-profile-that-does-not-exist',
+      PRIVATE_LESSONS_TOKEN: '',
+      PRIVATE_LESSONS_PROFILE: 'a-profile-that-does-not-exist',
     });
     // Either NO_TOKEN (17) when the keychain is empty, or 0 if a real stored token for
     // the default profile exists on this machine; assert only the failure shape.
@@ -184,7 +184,7 @@ describe('exit codes are mapped from the API error codes', () => {
 
   it('exits 18 when the host is unreachable', async () => {
     const result = await run(['lessons', 'list'], {
-      SCORSYNC_BASE_URL: 'http://127.0.0.1:1/api/v1',
+      PRIVATE_LESSONS_BASE_URL: 'http://127.0.0.1:1/api/v1',
     });
     expect(result.code).toBe(18);
     expect(result.stderr).toContain('NETWORK_ERROR');

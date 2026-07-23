@@ -1,4 +1,4 @@
-# ScorSync Private Lessons API — Frozen Internal Contracts (Phase 1)
+# Private Lessons API — Frozen Internal Contracts (Phase 1)
 
 This document freezes the contracts that the OpenAPI document (`docs/api/openapi.yaml`)
 cannot express, so Phases 2–7 build without re-litigation. It is the companion to that

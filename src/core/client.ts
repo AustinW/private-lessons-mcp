@@ -12,7 +12,7 @@ import createClient, { type Client } from 'openapi-fetch';
 
 import type { components, paths } from '../generated/openapi.js';
 import { resolveIdempotencyKey } from './concurrency.js';
-import { problemToError, ScorSyncError, toScorSyncError } from './errors.js';
+import { problemToError, PrivateLessonsError, toPrivateLessonsError } from './errors.js';
 import { assertRfc3339 } from './time.js';
 
 export type Lesson = components['schemas']['Lesson'];
@@ -33,7 +33,7 @@ export type CreateAthleteRequest = components['schemas']['CreateAthleteRequest']
 
 export const DURATION_MINUTES: readonly DurationMinutes[] = [30, 45, 60, 90, 120];
 
-export const DEFAULT_BASE_URL_ENV = 'SCORSYNC_BASE_URL';
+export const DEFAULT_BASE_URL_ENV = 'PRIVATE_LESSONS_BASE_URL';
 
 /** A single-lesson response plus the strong ETag to use as the next `If-Match`. */
 export interface LessonResult {
@@ -49,8 +49,8 @@ export interface AuditPage {
   requestId: string | undefined;
 }
 
-export interface ScorSyncClientOptions {
-  /** Full base URL including `/api/v1`, e.g. `https://scorsync.example.com/api/v1`. */
+export interface PrivateLessonsClientOptions {
+  /** Full base URL including `/api/v1`, e.g. `https://private-lessons.scorsync.com/api/v1`. */
   baseUrl: string;
   token: string;
   /** Injectable for tests. Defaults to the global fetch. */
@@ -88,15 +88,15 @@ function etagOf(response: Response): string | undefined {
  * Typed façade over the generated client.
  *
  * Every method is a thin call into `openapi-fetch`; the only logic here is
- * (a) turning non-2xx into a `ScorSyncError`, (b) surfacing `ETag`/`X-Request-Id`,
+ * (a) turning non-2xx into a `PrivateLessonsError`, (b) surfacing `ETag`/`X-Request-Id`,
  * and (c) validating timestamps at the boundary before they hit the wire.
  */
-export class ScorSyncClient {
+export class PrivateLessonsClient {
   private readonly http: Client<paths>;
 
   readonly baseUrl: string;
 
-  constructor(options: ScorSyncClientOptions) {
+  constructor(options: PrivateLessonsClientOptions) {
     this.baseUrl = normaliseBaseUrl(options.baseUrl);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${options.token}`,
@@ -111,18 +111,18 @@ export class ScorSyncClient {
     });
   }
 
-  /** Run `fn`, normalising anything it throws into a `ScorSyncError`. */
+  /** Run `fn`, normalising anything it throws into a `PrivateLessonsError`. */
   private static async guard<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
     } catch (err) {
-      if (err instanceof ScorSyncError) throw err;
-      throw toScorSyncError(err);
+      if (err instanceof PrivateLessonsError) throw err;
+      throw toPrivateLessonsError(err);
     }
   }
 
   async getMe(): Promise<Me> {
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.GET('/me', {});
       return unwrap<Me>(result as FetchResult<{ data: Me }>).value;
     });
@@ -131,14 +131,14 @@ export class ScorSyncClient {
   async listLessons(
     query: NonNullable<paths['/lessons']['get']['parameters']['query']> = {},
   ): Promise<Lesson[]> {
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.GET('/lessons', { params: { query } });
       return unwrap<Lesson[]>(result as FetchResult<{ data: Lesson[] }>).value;
     });
   }
 
   async getLesson(id: number): Promise<LessonResult> {
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.GET('/lessons/{id}', { params: { path: { id } } });
       const { value, response } = unwrap<Lesson>(result as FetchResult<{ data: Lesson }>);
       return { lesson: value, etag: etagOf(response), requestId: requestId(response) };
@@ -155,7 +155,7 @@ export class ScorSyncClient {
   ): Promise<LessonResult> {
     assertRfc3339(body.scheduled_at);
     const key = resolveIdempotencyKey(options.idempotencyKey);
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.POST('/lessons', {
         params: { header: { 'Idempotency-Key': key } },
         body,
@@ -172,7 +172,7 @@ export class ScorSyncClient {
     options: { ifMatch: string },
   ): Promise<LessonResult> {
     if (body.scheduled_at) assertRfc3339(body.scheduled_at);
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.PATCH('/lessons/{id}', {
         params: { path: { id }, header: { 'If-Match': options.ifMatch } },
         body,
@@ -188,7 +188,7 @@ export class ScorSyncClient {
     options: { ifMatch: string; idempotencyKey?: string },
   ): Promise<LessonResult> {
     const key = resolveIdempotencyKey(options.idempotencyKey);
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.POST('/lessons/{id}/cancel', {
         params: {
           path: { id },
@@ -208,7 +208,7 @@ export class ScorSyncClient {
   ): Promise<LessonResult> {
     if (body.paid_at) assertRfc3339(body.paid_at);
     const key = resolveIdempotencyKey(options.idempotencyKey);
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.POST('/lessons/{id}/mark-paid', {
         params: {
           path: { id },
@@ -226,14 +226,14 @@ export class ScorSyncClient {
     duration: DurationMinutes;
     coach?: number;
   }): Promise<Availability> {
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.GET('/availability', { params: { query } });
       return unwrap<Availability>(result as FetchResult<{ data: Availability }>).value;
     });
   }
 
   async searchAthletes(query?: string): Promise<Athlete[]> {
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.GET('/athletes', {
         params: { query: query ? { query } : {} },
       });
@@ -242,7 +242,7 @@ export class ScorSyncClient {
   }
 
   async getAthlete(id: number): Promise<Athlete> {
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.GET('/athletes/{id}', { params: { path: { id } } });
       return unwrap<Athlete>(result as FetchResult<{ data: Athlete }>).value;
     });
@@ -254,7 +254,7 @@ export class ScorSyncClient {
     options: { idempotencyKey?: string } = {},
   ): Promise<Athlete> {
     const key = resolveIdempotencyKey(options.idempotencyKey);
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.POST('/athletes', {
         params: { header: { 'Idempotency-Key': key } },
         body,
@@ -269,21 +269,21 @@ export class ScorSyncClient {
     scheduled_at: string;
   }): Promise<PricingQuote> {
     assertRfc3339(query.scheduled_at);
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.GET('/pricing-quotes', { params: { query } });
       return unwrap<PricingQuote>(result as FetchResult<{ data: PricingQuote }>).value;
     });
   }
 
   async listBalances(): Promise<Balance[]> {
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = await this.http.GET('/balances', {});
       return unwrap<Balance[]>(result as FetchResult<{ data: Balance[] }>).value;
     });
   }
 
   async listAuditEvents(query: { limit?: number; cursor?: string } = {}): Promise<AuditPage> {
-    return ScorSyncClient.guard(async () => {
+    return PrivateLessonsClient.guard(async () => {
       const result = (await this.http.GET('/audit-events', {
         params: { query },
       })) as FetchResult<{ data: AuditEvent[]; meta: CursorPageMeta }>;

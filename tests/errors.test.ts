@@ -6,8 +6,8 @@ import {
   exitCodeFor,
   isApiErrorCode,
   problemToError,
-  ScorSyncError,
-  toScorSyncError,
+  PrivateLessonsError,
+  toPrivateLessonsError,
   type ApiErrorCode,
 } from '../src/core/errors.js';
 
@@ -79,7 +79,7 @@ describe('problemToError', () => {
     const err = problemToError(
       409,
       {
-        type: 'https://scorsync.example.com/errors/slot-conflict',
+        type: 'https://private-lessons.scorsync.com/errors/slot-conflict',
         title: 'Lesson conflicts with an existing booking',
         status: 409,
         detail: 'Coach already has a lesson from 2:00 PM to 3:00 PM Pacific.',
@@ -187,14 +187,14 @@ describe('problemToError', () => {
   });
 });
 
-describe('toScorSyncError', () => {
-  it('passes a ScorSyncError through unchanged', () => {
-    const original = new ScorSyncError('FORBIDDEN', 'nope');
-    expect(toScorSyncError(original)).toBe(original);
+describe('toPrivateLessonsError', () => {
+  it('passes a PrivateLessonsError through unchanged', () => {
+    const original = new PrivateLessonsError('FORBIDDEN', 'nope');
+    expect(toPrivateLessonsError(original)).toBe(original);
   });
 
   it('classifies a fetch failure as NETWORK_ERROR', () => {
-    const err = toScorSyncError(new TypeError('fetch failed'));
+    const err = toPrivateLessonsError(new TypeError('fetch failed'));
     expect(err.code).toBe('NETWORK_ERROR');
     expect(err.exitCode).toBe(18);
   });
@@ -207,7 +207,7 @@ describe('toScorSyncError', () => {
       Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }),
       new Error('Aborted with Ctrl+D'),
     ]) {
-      const mapped = toScorSyncError(err);
+      const mapped = toPrivateLessonsError(err);
       expect(mapped.code).toBe('ABORTED');
       expect(mapped.exitCode).toBe(19);
     }

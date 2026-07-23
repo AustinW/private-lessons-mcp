@@ -17,7 +17,7 @@
  *    return `409 SLOT_CONFLICT` if something is booked in between.
  */
 
-import type { Availability, DurationMinutes, PricingQuote, ScorSyncClient } from './client.js';
+import type { Availability, DurationMinutes, PricingQuote, PrivateLessonsClient } from './client.js';
 import { formatPacific, pacificDate, parseRfc3339, TENANT_TIMEZONE } from './time.js';
 
 export interface PreflightInput {
@@ -81,7 +81,7 @@ export function windowIsBookable(
  * wrong" (a naive timestamp, say) still propagate — those are not check failures.
  */
 export async function preflightLesson(
-  client: ScorSyncClient,
+  client: PrivateLessonsClient,
   input: PreflightInput,
 ): Promise<PreflightResult> {
   const start = parseRfc3339(input.scheduledAt);

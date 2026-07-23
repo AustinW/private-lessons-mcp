@@ -1,7 +1,7 @@
 /**
  * Token storage.
  *
- * Precedence: `SCORSYNC_TOKEN` (env) wins, then the OS credential store.
+ * Precedence: `PRIVATE_LESSONS_TOKEN` (env) wins, then the OS credential store.
  *
  * The credential store is `@napi-rs/keyring` — a maintained native binding over the
  * macOS Keychain, the Windows Credential Manager, and the Linux Secret Service.
@@ -14,8 +14,8 @@
  * The token value is never accepted as an argv argument anywhere in this package.
  */
 
-const SERVICE = 'scorsync-private-lessons';
-export const TOKEN_ENV_VAR = 'SCORSYNC_TOKEN';
+const SERVICE = 'private-lessons';
+export const TOKEN_ENV_VAR = 'PRIVATE_LESSONS_TOKEN';
 
 export type TokenSource = 'env' | 'keychain' | 'none';
 

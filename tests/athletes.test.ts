@@ -13,12 +13,12 @@ import {
   requireSingleAthlete,
   resolveAthleteByName,
 } from '../src/core/athletes.js';
-import { ScorSyncClient } from '../src/core/client.js';
-import { AthleteAmbiguousError, ScorSyncError } from '../src/core/errors.js';
+import { PrivateLessonsClient } from '../src/core/client.js';
+import { AthleteAmbiguousError, PrivateLessonsError } from '../src/core/errors.js';
 import { makeAthlete, makeLesson, MockApi } from './helpers/mock-api.js';
 
-function clientFor(api: MockApi): ScorSyncClient {
-  return new ScorSyncClient({ baseUrl: api.baseUrl, token: 'test-token', fetch: api.fetch });
+function clientFor(api: MockApi): PrivateLessonsClient {
+  return new PrivateLessonsClient({ baseUrl: api.baseUrl, token: 'test-token', fetch: api.fetch });
 }
 
 describe('step 1 — search', () => {
@@ -117,7 +117,7 @@ describe('step 3 — writes take explicit ids only', () => {
 
   it('refuses a write whose athlete_ids are missing, empty, or not ids', () => {
     for (const bad of [undefined, null, [], ['Ada Lovelace'], [0], [-1], [1.5]]) {
-      expect(() => assertExplicitAthleteIds(bad)).toThrowError(ScorSyncError);
+      expect(() => assertExplicitAthleteIds(bad)).toThrowError(PrivateLessonsError);
     }
     expect(assertExplicitAthleteIds([101, 102])).toEqual([101, 102]);
   });
@@ -126,8 +126,8 @@ describe('step 3 — writes take explicit ids only', () => {
     try {
       assertExplicitAthleteIds(['Ada Lovelace']);
     } catch (err) {
-      expect((err as ScorSyncError).code).toBe('VALIDATION_FAILED');
-      expect((err as ScorSyncError).detail).toContain('Names are never accepted');
+      expect((err as PrivateLessonsError).code).toBe('VALIDATION_FAILED');
+      expect((err as PrivateLessonsError).detail).toContain('Names are never accepted');
     }
   });
 });

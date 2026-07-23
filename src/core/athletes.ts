@@ -15,8 +15,8 @@
  * It is never an HTTP status and never appears in a problem document.
  */
 
-import type { Athlete, ScorSyncClient } from './client.js';
-import { AthleteAmbiguousError, ScorSyncError } from './errors.js';
+import type { Athlete, PrivateLessonsClient } from './client.js';
+import { AthleteAmbiguousError, PrivateLessonsError } from './errors.js';
 
 export interface AthleteCandidate {
   id: number;
@@ -51,7 +51,7 @@ export type AthleteResolution =
  * match — it returns the shape so a caller that wants to present choices can.
  */
 export async function resolveAthleteByName(
-  client: ScorSyncClient,
+  client: PrivateLessonsClient,
   query: string,
 ): Promise<AthleteResolution> {
   const candidates = (await client.searchAthletes(query)).map(toCandidate);
@@ -68,7 +68,7 @@ export async function resolveAthleteByName(
  * must have an explicit id in hand before this returns.
  */
 export async function requireSingleAthlete(
-  client: ScorSyncClient,
+  client: PrivateLessonsClient,
   query: string,
 ): Promise<AthleteCandidate> {
   const resolution = await resolveAthleteByName(client, query);
@@ -78,7 +78,7 @@ export async function requireSingleAthlete(
     case 'ambiguous':
       throw new AthleteAmbiguousError(resolution.query, resolution.candidates);
     case 'not_found':
-      throw new ScorSyncError(
+      throw new PrivateLessonsError(
         'ATHLETE_NOT_FOUND',
         `No athlete matches "${query}".`,
         {
@@ -98,7 +98,7 @@ export async function requireSingleAthlete(
  */
 export function assertExplicitAthleteIds(ids: unknown): number[] {
   if (!Array.isArray(ids) || ids.length === 0) {
-    throw new ScorSyncError(
+    throw new PrivateLessonsError(
       'VALIDATION_FAILED',
       'athlete_ids is required and must contain at least one explicit athlete id.',
       {
@@ -111,7 +111,7 @@ export function assertExplicitAthleteIds(ids: unknown): number[] {
   }
   const parsed = ids.map((id) => {
     if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) {
-      throw new ScorSyncError(
+      throw new PrivateLessonsError(
         'VALIDATION_FAILED',
         `athlete_ids entries must be positive integer ids; received ${JSON.stringify(id)}.`,
         {

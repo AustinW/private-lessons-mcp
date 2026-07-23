@@ -1,16 +1,35 @@
 {
-  "name": "@scorsync/private-lessons-clients",
+  "name": "@scorsync/private-lessons",
   "version": "0.1.0",
   "private": false,
-  "description": "MCP server and CLI for the ScorSync private-lessons REST API. The HTTP client is generated from contract/openapi.yaml.",
+  "description": "MCP server and CLI for the Private Lessons REST API. The HTTP client is generated from contract/openapi.yaml.",
   "license": "MIT",
   "type": "module",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cli",
+    "gymnastics",
+    "scheduling",
+    "private-lessons"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AustinW/private-lessons-mcp.git"
+  },
+  "homepage": "https://github.com/AustinW/private-lessons-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/AustinW/private-lessons-mcp/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=20.11"
   },
   "bin": {
-    "scorsync": "./dist/cli/index.js",
-    "scorsync-mcp": "./dist/mcp/index.js"
+    "private-lessons": "./dist/cli/index.js",
+    "private-lessons-mcp": "./dist/mcp/index.js"
   },
   "files": [
     "dist",

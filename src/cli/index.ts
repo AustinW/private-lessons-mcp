@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * The `scorsync` CLI.
+ * The `private-lessons` CLI.
  *
  * Behavioural guarantees this file implements:
  *
@@ -21,10 +21,10 @@ import {
   type Athlete,
   type DurationMinutes,
   type Lesson,
-  type ScorSyncClient,
+  type PrivateLessonsClient,
 } from '../core/client.js';
 import { formatETag, newIdempotencyKey, resolveIfMatch } from '../core/concurrency.js';
-import { EXIT_CODES, ScorSyncError, toScorSyncError } from '../core/errors.js';
+import { EXIT_CODES, PrivateLessonsError, toPrivateLessonsError } from '../core/errors.js';
 import { preflightLesson } from '../core/preflight.js';
 import { openSession, type Session } from '../core/session.js';
 import {
@@ -69,14 +69,14 @@ async function session(command: Command): Promise<Session> {
   return openSession({
     baseUrl: g.baseUrl,
     profile: g.profile,
-    userAgent: `scorsync-cli/${VERSION}`,
+    userAgent: `private-lessons-cli/${VERSION}`,
   });
 }
 
 function parseDuration(value: string): DurationMinutes {
   const n = Number(value);
   if (!DURATION_MINUTES.includes(n as DurationMinutes)) {
-    throw new ScorSyncError(
+    throw new PrivateLessonsError(
       'USAGE_ERROR',
       `Invalid duration ${value}.`,
       { detail: `Duration must be one of ${DURATION_MINUTES.join(', ')} minutes.` },
@@ -93,10 +93,10 @@ function parseIds(value: string): number[] {
     .map((part) => {
       const n = Number(part);
       if (!Number.isInteger(n) || n <= 0) {
-        throw new ScorSyncError('USAGE_ERROR', `Invalid athlete id "${part}".`, {
+        throw new PrivateLessonsError('USAGE_ERROR', `Invalid athlete id "${part}".`, {
           detail:
             `Invalid athlete id "${part}". --athlete-ids takes a comma-separated list of ` +
-            'numeric ids. Find them with `scorsync athletes search`.',
+            'numeric ids. Find them with `private-lessons athletes search`.',
         });
       }
       return n;
@@ -143,7 +143,7 @@ function athleteName(athlete: Athlete): string {
  * Returns the ETag to use as `If-Match`, or `null` when the operator declined.
  */
 async function confirmDestructive(
-  client: ScorSyncClient,
+  client: PrivateLessonsClient,
   lessonId: number,
   action: string,
   g: GlobalOptions,
@@ -180,14 +180,14 @@ async function confirmDestructive(
 const program = new Command();
 
 program
-  .name('scorsync')
+  .name('private-lessons')
   .description(
-    'CLI for the ScorSync private-lessons API. The HTTP client is generated from ' +
+    'CLI for the Private Lessons API. The HTTP client is generated from ' +
       'contract/openapi.yaml, so it cannot drift from the contract.',
   )
   .version(VERSION)
   .option('--json', 'Emit exactly one JSON document on stdout; humans go to stderr.', false)
-  .option('--base-url <url>', `API base URL (or set SCORSYNC_BASE_URL).`)
+  .option('--base-url <url>', `API base URL (or set PRIVATE_LESSONS_BASE_URL).`)
   .option('--profile <name>', 'Credential-store profile.', 'default')
   .option('-y, --yes', 'Skip interactive confirmation for destructive actions.', false)
   .showHelpAfterError()
@@ -210,15 +210,15 @@ auth
   .action(async (_opts, command: Command) => {
     const g = globals(command);
     if (!(await keychainAvailable())) {
-      throw new ScorSyncError('USAGE_ERROR', 'No OS credential store available.', {
+      throw new PrivateLessonsError('USAGE_ERROR', 'No OS credential store available.', {
         detail:
           'No OS credential store is available on this platform. Set the ' +
           `${TOKEN_ENV_VAR} environment variable instead.`,
       });
     }
-    const token = await readSecret('Paste the ScorSync API token (input hidden): ');
+    const token = await readSecret('Paste the Private Lessons API token (input hidden): ');
     if (!token) {
-      throw new ScorSyncError('USAGE_ERROR', 'No token supplied.', {
+      throw new PrivateLessonsError('USAGE_ERROR', 'No token supplied.', {
         detail: 'No token was supplied on stdin.',
       });
     }
@@ -248,7 +248,7 @@ auth
       keychain_available: await keychainAvailable(),
       token_source: resolved?.source ?? 'none',
       token_fingerprint: resolved ? fingerprint(resolved.token) : null,
-      base_url: process.env.SCORSYNC_BASE_URL ?? g.baseUrl ?? null,
+      base_url: process.env.PRIVATE_LESSONS_BASE_URL ?? g.baseUrl ?? null,
     };
     if (g.json) {
       printJson(payload);
@@ -343,7 +343,7 @@ lessons
   .requiredOption('--coach <id>', 'Coach user id.')
   .requiredOption(
     '--athlete-ids <ids>',
-    'Comma-separated athlete ids. Find them with `scorsync athletes search`.',
+    'Comma-separated athlete ids. Find them with `private-lessons athletes search`.',
   )
   .requiredOption(
     '--at <timestamp>',
@@ -409,7 +409,7 @@ lessons
     }
 
     if (!opts.acknowledgeFee) {
-      throw new ScorSyncError(
+      throw new PrivateLessonsError(
         'FACILITY_FEE_ACK_REQUIRED',
         'The facility fee must be acknowledged.',
         {
@@ -483,7 +483,7 @@ lessons
     if (opts.acknowledgeLateBooking) body.late_booking_acknowledged = true;
 
     if (Object.keys(body).length === 0) {
-      throw new ScorSyncError('USAGE_ERROR', 'Nothing to update.', {
+      throw new PrivateLessonsError('USAGE_ERROR', 'Nothing to update.', {
         detail:
           'No field was supplied. An empty PATCH would still bump the version, write an ' +
           'audit event and send an update notification, so it is refused here.',
@@ -536,7 +536,7 @@ lessons
     }
 
     if (!opts.ifMatch) {
-      throw new ScorSyncError('USAGE_ERROR', '--if-match is required.', {
+      throw new PrivateLessonsError('USAGE_ERROR', '--if-match is required.', {
         detail:
           '--if-match is required on an update: the API needs the strong ETag of the ' +
           `version you read. The current ETag for lesson ${lessonId} is ${currentEtag}. ` +
@@ -600,7 +600,7 @@ lessons
       '  effect    notifies the coach and family; removes it from calendars.',
     ]);
     if (!confirmed) {
-      throw new ScorSyncError('ABORTED', 'Cancelled at the confirmation prompt.', {
+      throw new PrivateLessonsError('ABORTED', 'Cancelled at the confirmation prompt.', {
         detail: 'No confirmation given; nothing was written.',
       });
     }
@@ -663,7 +663,7 @@ lessons
       '  effect    changes the coach balance; there is no un-mark-paid endpoint.',
     ]);
     if (!confirmed) {
-      throw new ScorSyncError('ABORTED', 'Cancelled at the confirmation prompt.', {
+      throw new PrivateLessonsError('ABORTED', 'Cancelled at the confirmation prompt.', {
         detail: 'No confirmation given; nothing was written.',
       });
     }
@@ -783,7 +783,7 @@ athletes
 
     const membership = opts.membershipStatus as string | undefined;
     if (membership && !['unknown', 'member', 'not_member'].includes(membership)) {
-      throw new ScorSyncError('USAGE_ERROR', `Invalid membership status "${membership}".`, {
+      throw new PrivateLessonsError('USAGE_ERROR', `Invalid membership status "${membership}".`, {
         detail: 'membership-status must be one of: unknown, member, not_member.',
       });
     }
@@ -943,7 +943,7 @@ program
 
 // ----------------------------------------------------------------- driver
 
-function emit(error: ScorSyncError): void {
+function emit(error: PrivateLessonsError): void {
   // The root options are not parsed yet when a usage error fires, so fall back to argv.
   const wantsJson = process.argv.includes('--json');
   if (wantsJson) printJson(error.toJSON());
@@ -970,10 +970,10 @@ async function main(): Promise<void> {
       return;
     }
     if (err instanceof Rfc3339FormatError) {
-      emit(new ScorSyncError('VALIDATION_FAILED', err.message, { detail: err.message }));
+      emit(new PrivateLessonsError('VALIDATION_FAILED', err.message, { detail: err.message }));
       return;
     }
-    emit(toScorSyncError(err));
+    emit(toPrivateLessonsError(err));
   }
 }
 

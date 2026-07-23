@@ -7,13 +7,13 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { ScorSyncClient } from '../src/core/client.js';
+import { PrivateLessonsClient } from '../src/core/client.js';
 import { buildServer, TOOL_NAMES } from '../src/mcp/server.js';
 import { makeAthlete, makeLesson, MockApi, problem } from './helpers/mock-api.js';
 
 async function connect(api: MockApi): Promise<Client> {
   const server = buildServer({
-    client: new ScorSyncClient({ baseUrl: api.baseUrl, token: 'test-token', fetch: api.fetch }),
+    client: new PrivateLessonsClient({ baseUrl: api.baseUrl, token: 'test-token', fetch: api.fetch }),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'test', version: '0.0.0' });
@@ -137,11 +137,11 @@ describe('tool surface', () => {
   it('declares side effects in the description of every mutation tool', async () => {
     const tools = (await client.listTools()).tools;
     const mutations = [
-      'scorsync_create_lesson',
-      'scorsync_update_lesson',
-      'scorsync_cancel_lesson',
-      'scorsync_mark_lesson_paid',
-      'scorsync_create_athlete',
+      'private_lessons_create_lesson',
+      'private_lessons_update_lesson',
+      'private_lessons_cancel_lesson',
+      'private_lessons_mark_lesson_paid',
+      'private_lessons_create_athlete',
     ];
     for (const name of mutations) {
       const tool = tools.find((t) => t.name === name);
@@ -154,11 +154,11 @@ describe('tool surface', () => {
   it('offers a dry run on every mutation tool', async () => {
     const tools = (await client.listTools()).tools;
     for (const name of [
-      'scorsync_create_lesson',
-      'scorsync_update_lesson',
-      'scorsync_cancel_lesson',
-      'scorsync_mark_lesson_paid',
-      'scorsync_create_athlete',
+      'private_lessons_create_lesson',
+      'private_lessons_update_lesson',
+      'private_lessons_cancel_lesson',
+      'private_lessons_mark_lesson_paid',
+      'private_lessons_create_athlete',
     ]) {
       const schema = tools.find((t) => t.name === name)?.inputSchema as {
         properties?: Record<string, unknown>;
@@ -169,14 +169,14 @@ describe('tool surface', () => {
 
   it('marks the two destructive tools as destructive', async () => {
     const tools = (await client.listTools()).tools;
-    for (const name of ['scorsync_cancel_lesson', 'scorsync_mark_lesson_paid']) {
+    for (const name of ['private_lessons_cancel_lesson', 'private_lessons_mark_lesson_paid']) {
       expect(tools.find((t) => t.name === name)?.annotations?.destructiveHint, name).toBe(true);
     }
   });
 
   it('has no athlete-name field on any write tool', async () => {
     const tools = (await client.listTools()).tools;
-    for (const name of ['scorsync_create_lesson', 'scorsync_update_lesson']) {
+    for (const name of ['private_lessons_create_lesson', 'private_lessons_update_lesson']) {
       const schema = tools.find((t) => t.name === name)?.inputSchema as {
         properties?: Record<string, unknown>;
       };
@@ -190,23 +190,23 @@ describe('tool surface', () => {
 
   it('instructs the caller through the two-step athlete flow in the tool descriptions', async () => {
     const tools = (await client.listTools()).tools;
-    const search = tools.find((t) => t.name === 'scorsync_search_athletes');
+    const search = tools.find((t) => t.name === 'private_lessons_search_athletes');
     expect(search?.description).toMatch(/ATHLETE_AMBIGUOUS/);
     expect(search?.description).toMatch(/ask the user/i);
     expect(search?.description).toMatch(/Do not pick the first/i);
 
-    const create = tools.find((t) => t.name === 'scorsync_create_lesson');
-    expect(create?.description).toMatch(/scorsync_search_athletes/);
+    const create = tools.find((t) => t.name === 'private_lessons_create_lesson');
+    expect(create?.description).toMatch(/private_lessons_search_athletes/);
     expect(create?.description).toMatch(/never guess/i);
     expect(create?.description).toMatch(/no name field/i);
   });
 });
 
 describe('dry runs write nothing', () => {
-  it('scorsync_create_lesson dry run only reads', async () => {
+  it('private_lessons_create_lesson dry run only reads', async () => {
     const api = fullApi();
     const client = await connect(api);
-    const { json } = await call(client, 'scorsync_create_lesson', {
+    const { json } = await call(client, 'private_lessons_create_lesson', {
       coach_id: 7,
       athlete_ids: [101],
       scheduled_at: '2026-08-04T14:00:00-07:00',
@@ -224,10 +224,10 @@ describe('dry runs write nothing', () => {
     expect(api.requestsFor('POST', '/lessons')).toHaveLength(0);
   });
 
-  it('scorsync_cancel_lesson dry run only reads and shows the Pacific time', async () => {
+  it('private_lessons_cancel_lesson dry run only reads and shows the Pacific time', async () => {
     const api = fullApi();
     const client = await connect(api);
-    const { json } = await call(client, 'scorsync_cancel_lesson', {
+    const { json } = await call(client, 'private_lessons_cancel_lesson', {
       lesson_id: 42,
       dry_run: true,
     });
@@ -238,10 +238,10 @@ describe('dry runs write nothing', () => {
     expect(api.requestsFor('POST', '/lessons/42/cancel')).toHaveLength(0);
   });
 
-  it('scorsync_mark_lesson_paid dry run reports the amount and writes nothing', async () => {
+  it('private_lessons_mark_lesson_paid dry run reports the amount and writes nothing', async () => {
     const api = fullApi();
     const client = await connect(api);
-    const { json } = await call(client, 'scorsync_mark_lesson_paid', {
+    const { json } = await call(client, 'private_lessons_mark_lesson_paid', {
       lesson_id: 42,
       dry_run: true,
     });
@@ -252,10 +252,10 @@ describe('dry runs write nothing', () => {
     expect(api.requestsFor('POST', '/lessons/42/mark-paid')).toHaveLength(0);
   });
 
-  it('scorsync_create_athlete dry run surfaces possible duplicates', async () => {
+  it('private_lessons_create_athlete dry run surfaces possible duplicates', async () => {
     const api = fullApi();
     const client = await connect(api);
-    const { json } = await call(client, 'scorsync_create_athlete', {
+    const { json } = await call(client, 'private_lessons_create_athlete', {
       first_name: 'Ada',
       last_name: 'Lovelace',
       dry_run: true,
@@ -287,7 +287,7 @@ describe('dry runs write nothing', () => {
       },
     }));
     const client = await connect(api);
-    const { json } = await call(client, 'scorsync_create_lesson', {
+    const { json } = await call(client, 'private_lessons_create_lesson', {
       coach_id: 7,
       athlete_ids: [101],
       scheduled_at: '2026-08-04T14:00:00-07:00',
@@ -308,7 +308,7 @@ describe('the two-step athlete flow through the tools', () => {
       body: { data: [makeAthlete(1, 'Ada Smith'), makeAthlete(2, 'Alan Smith')] },
     }));
     const client = await connect(api);
-    const { raw, json } = await call(client, 'scorsync_search_athletes', { query: 'Smith' });
+    const { raw, json } = await call(client, 'private_lessons_search_athletes', { query: 'Smith' });
 
     expect(raw.isError).toBeFalsy();
     expect(json.status).toBe('ambiguous');
@@ -320,7 +320,7 @@ describe('the two-step athlete flow through the tools', () => {
 
   it('hands back a single id with the next step spelled out', async () => {
     const client = await connect(fullApi());
-    const { json } = await call(client, 'scorsync_search_athletes', { query: 'Ada' });
+    const { json } = await call(client, 'private_lessons_search_athletes', { query: 'Ada' });
     expect(json.status).toBe('resolved');
     expect(json.next_step).toContain('athlete_ids: [101]');
   });
@@ -328,7 +328,7 @@ describe('the two-step athlete flow through the tools', () => {
   it('reports a zero match without inventing an athlete', async () => {
     const api = fullApi().on('GET /athletes', () => ({ body: { data: [] } }));
     const client = await connect(api);
-    const { json } = await call(client, 'scorsync_search_athletes', { query: 'Nobody' });
+    const { json } = await call(client, 'private_lessons_search_athletes', { query: 'Nobody' });
     expect(json.status).toBe('not_found');
     expect(api.requestsFor('POST', '/athletes')).toHaveLength(0);
   });
@@ -338,7 +338,7 @@ describe('writes', () => {
   it('sends a generated Idempotency-Key on create', async () => {
     const api = fullApi();
     const client = await connect(api);
-    const { json } = await call(client, 'scorsync_create_lesson', {
+    const { json } = await call(client, 'private_lessons_create_lesson', {
       coach_id: 7,
       athlete_ids: [101],
       scheduled_at: '2026-08-04T14:00:00-07:00',
@@ -352,7 +352,7 @@ describe('writes', () => {
   it('uses a caller-supplied if_match verbatim on cancel', async () => {
     const api = fullApi();
     const client = await connect(api);
-    await call(client, 'scorsync_cancel_lesson', {
+    await call(client, 'private_lessons_cancel_lesson', {
       lesson_id: 42,
       if_match: '"lesson-42-v3"',
       reason: 'family cancelled',
@@ -365,7 +365,7 @@ describe('writes', () => {
   it('warns when it had to fetch the ETag itself', async () => {
     const api = fullApi();
     const client = await connect(api);
-    const { json } = await call(client, 'scorsync_update_lesson', {
+    const { json } = await call(client, 'private_lessons_update_lesson', {
       lesson_id: 42,
       notes: 'updated',
     });
@@ -376,7 +376,7 @@ describe('writes', () => {
   it('rejects a weak or wildcard if_match', async () => {
     const client = await connect(fullApi());
     for (const bad of ['W/"lesson-42-v3"', '*']) {
-      const { raw, json } = await call(client, 'scorsync_update_lesson', {
+      const { raw, json } = await call(client, 'private_lessons_update_lesson', {
         lesson_id: 42,
         notes: 'x',
         if_match: bad,
@@ -389,7 +389,7 @@ describe('writes', () => {
   it('refuses an empty PATCH rather than bumping the version for nothing', async () => {
     const api = fullApi();
     const client = await connect(api);
-    const { raw, json } = await call(client, 'scorsync_update_lesson', { lesson_id: 42 });
+    const { raw, json } = await call(client, 'private_lessons_update_lesson', { lesson_id: 42 });
     expect(raw.isError).toBe(true);
     expect(json.code).toBe('VALIDATION_FAILED');
     expect(api.requestsFor('PATCH', '/lessons/42')).toHaveLength(0);
@@ -398,7 +398,7 @@ describe('writes', () => {
   it('distinguishes an absent field from an explicit null on PATCH', async () => {
     const api = fullApi();
     const client = await connect(api);
-    await call(client, 'scorsync_update_lesson', {
+    await call(client, 'private_lessons_update_lesson', {
       lesson_id: 42,
       notes: null,
       if_match: '"lesson-42-v3"',
@@ -413,7 +413,7 @@ describe('writes', () => {
       problem(412, 'VERSION_MISMATCH', 'stale', { current_version: 5 }),
     );
     const client = await connect(api);
-    const { raw, json } = await call(client, 'scorsync_update_lesson', {
+    const { raw, json } = await call(client, 'private_lessons_update_lesson', {
       lesson_id: 42,
       notes: 'x',
       if_match: '"lesson-42-v3"',
@@ -427,7 +427,7 @@ describe('writes', () => {
   it('rejects a naive timestamp without contacting the API', async () => {
     const api = fullApi();
     const client = await connect(api);
-    const { raw, json } = await call(client, 'scorsync_create_lesson', {
+    const { raw, json } = await call(client, 'private_lessons_create_lesson', {
       coach_id: 7,
       athlete_ids: [101],
       scheduled_at: '2026-08-04T14:00:00',
@@ -443,7 +443,7 @@ describe('writes', () => {
 describe('reads', () => {
   it('renders every timestamp in Pacific alongside the machine form', async () => {
     const client = await connect(fullApi());
-    const { json } = await call(client, 'scorsync_list_lessons', {});
+    const { json } = await call(client, 'private_lessons_list_lessons', {});
     const lessons = json.lessons as Array<Record<string, unknown>>;
     expect(lessons[0]?.scheduled_at).toBe('2026-08-04T14:00:00-07:00');
     expect(String(lessons[0]?.scheduled_at_pacific)).toContain('Aug 4, 2026');
@@ -452,7 +452,7 @@ describe('reads', () => {
 
   it('labels the quote as advisory and never computes a fee itself', async () => {
     const client = await connect(fullApi());
-    const { json } = await call(client, 'scorsync_get_quote', {
+    const { json } = await call(client, 'private_lessons_get_quote', {
       athlete_ids: [101],
       scheduled_at: '2026-08-04T14:00:00-07:00',
       duration: 60,
@@ -464,7 +464,7 @@ describe('reads', () => {
 
   it('explains what a balance means', async () => {
     const client = await connect(fullApi());
-    const { json } = await call(client, 'scorsync_get_balance', {});
+    const { json } = await call(client, 'private_lessons_get_balance', {});
     expect(String(json.meaning)).toContain('coach owes the gym');
   });
 
@@ -473,7 +473,7 @@ describe('reads', () => {
       problem(403, 'FORBIDDEN', 'You do not have permission to perform this action.'),
     );
     const client = await connect(api);
-    const { raw, json } = await call(client, 'scorsync_list_audit_events', {});
+    const { raw, json } = await call(client, 'private_lessons_list_audit_events', {});
     expect(raw.isError).toBe(true);
     expect(json.code).toBe('FORBIDDEN');
     expect(json.request_id).toBeTruthy();
