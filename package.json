@@ -28,8 +28,8 @@
     "node": ">=20.11"
   },
   "bin": {
-    "private-lessons": "./dist/cli/index.js",
-    "private-lessons-mcp": "./dist/mcp/index.js"
+    "private-lessons": "dist/cli/index.js",
+    "private-lessons-mcp": "dist/mcp/index.js"
   },
   "files": [
     "dist",
