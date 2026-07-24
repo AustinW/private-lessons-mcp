@@ -44,16 +44,19 @@ export type PrivateLessonsErrorCode = ApiErrorCode | ClientErrorCode;
  * Process exit codes.
  *
  * Stability contract: these values are part of the CLI's public interface and must
- * not be renumbered. Ranges 1-2 are conventional; 3-15 map 1:1 onto the 13 API codes
- * in the order they are declared in the contract; 16-19 are client-side conditions.
- * 126, 127 and 128+ are avoided because POSIX shells reserve them.
+ * not be renumbered. Ranges 1-2 are conventional; 3-15 map 1:1 onto the original 13 API
+ * codes in the order they were declared in the contract; 16-19 are client-side conditions.
+ * `EXTERNAL_REF_CONFLICT` is a 14th API code added later (issue #62); it takes the next
+ * free number (20) rather than slotting into 16, because renumbering the published
+ * client-side range would break the contract. 126, 127 and 128+ are avoided because
+ * POSIX shells reserve them.
  */
 export const EXIT_CODES = {
   OK: 0,
   UNKNOWN_ERROR: 1,
   USAGE_ERROR: 2,
 
-  // The 13 frozen API codes.
+  // The original 13 frozen API codes.
   VALIDATION_FAILED: 3,
   ATHLETE_NOT_FOUND: 4,
   ATHLETE_AMBIGUOUS: 5,
@@ -73,6 +76,9 @@ export const EXIT_CODES = {
   NO_TOKEN: 17,
   NETWORK_ERROR: 18,
   ABORTED: 19,
+
+  // Added after the initial 3-19 range was published (see the note above).
+  EXTERNAL_REF_CONFLICT: 20,
 } as const satisfies Record<PrivateLessonsErrorCode | 'OK', number>;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];
@@ -225,6 +231,7 @@ const ERROR_CODES: ReadonlySet<string> = new Set<ApiErrorCode>([
   'RATE_LIMITED',
   'FACILITY_FEE_ACK_REQUIRED',
   'LATE_BOOKING_ACK_REQUIRED',
+  'EXTERNAL_REF_CONFLICT',
 ]);
 
 export function isApiErrorCode(value: unknown): value is ApiErrorCode {

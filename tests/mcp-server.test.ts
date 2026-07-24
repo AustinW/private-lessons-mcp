@@ -408,6 +408,60 @@ describe('writes', () => {
     expect(body).not.toHaveProperty('observer');
   });
 
+  it('forwards an external_ref on create (#62)', async () => {
+    const api = fullApi();
+    const client = await connect(api);
+    const ref = { provider: 'google', id: 'evt_1', calendar_id: 'cal-A' };
+    await call(client, 'private_lessons_create_lesson', {
+      coach_id: 7,
+      athlete_ids: [101],
+      scheduled_at: '2026-08-04T14:00:00-07:00',
+      duration_minutes: 60,
+      fee_acknowledged: true,
+      external_ref: ref,
+    });
+    const body = api.requestsFor('POST', '/lessons')[0]?.body as Record<string, unknown>;
+    expect(body.external_ref).toEqual(ref);
+  });
+
+  it('sets external_ref on PATCH, and null clears it (#62)', async () => {
+    const api = fullApi();
+    const client = await connect(api);
+    const ref = { provider: 'google', id: 'evt_1', calendar_id: 'cal-A' };
+
+    await call(client, 'private_lessons_update_lesson', {
+      lesson_id: 42,
+      if_match: '"lesson-42-v3"',
+      external_ref: ref,
+    });
+    expect(
+      (api.requestsFor('PATCH', '/lessons/42')[0]?.body as Record<string, unknown>).external_ref,
+    ).toEqual(ref);
+
+    await call(client, 'private_lessons_update_lesson', {
+      lesson_id: 42,
+      if_match: '"lesson-42-v3"',
+      external_ref: null,
+    });
+    expect(
+      api.requestsFor('PATCH', '/lessons/42').at(-1)?.body as Record<string, unknown>,
+    ).toHaveProperty('external_ref', null);
+  });
+
+  it('forwards the external reconcile tuple on list (#62)', async () => {
+    const api = fullApi();
+    const client = await connect(api);
+    await call(client, 'private_lessons_list_lessons', {
+      external_id: 'evt_1',
+      external_provider: 'google',
+      external_calendar_id: 'cal-A',
+    });
+    const q = api.requestsFor('GET', '/lessons')[0]?.query;
+    expect(q?.get('external_id')).toBe('evt_1');
+    expect(q?.get('external_provider')).toBe('google');
+    expect(q?.get('external_calendar_id')).toBe('cal-A');
+  });
+
   it('surfaces a 412 VERSION_MISMATCH as a tool error carrying current_version', async () => {
     const api = fullApi().on('PATCH /lessons/{id}', () =>
       problem(412, 'VERSION_MISMATCH', 'stale', { current_version: 5 }),

@@ -158,6 +158,15 @@ const ifMatchSchema = z
       'value returns 412 VERSION_MISMATCH with the current version.',
   );
 
+// The external calendar link (issue #62). The full (provider, id, calendar_id) tuple is
+// the identity — the same event id can exist in two calendars — so all three are required
+// together. A second ACTIVE lesson with the same tuple is refused (EXTERNAL_REF_CONFLICT).
+const externalRefSchema = z.object({
+  provider: z.string().min(1).describe('Calendar provider, e.g. "google".'),
+  id: z.string().min(1).describe('The calendar event id (a per-instance id for recurring events).'),
+  calendar_id: z.string().min(1).describe('The id of the calendar the event lives in.'),
+});
+
 /**
  * Resolve the `If-Match` to send.
  *
@@ -239,6 +248,17 @@ export function buildServer(options: BuildServerOptions): McpServer {
         coach: z.number().int().positive().optional().describe('Filter by coach user id.'),
         paid: z.boolean().optional().describe('Filter by payment state.'),
         athlete: z.number().int().positive().optional().describe('Filter by athlete id.'),
+        external_id: z
+          .string()
+          .optional()
+          .describe(
+            'Reconcile lookup (#62): the linked calendar event id. Identity is the full ' +
+              '(external_id, external_provider, external_calendar_id) tuple — the same id can ' +
+              'exist in two calendars — so pass all three to address exactly one lesson; ' +
+              'external_id alone can return several.',
+          ),
+        external_provider: z.string().optional().describe('Reconcile lookup: the calendar provider (#62).'),
+        external_calendar_id: z.string().optional().describe('Reconcile lookup: the calendar id (#62).'),
       },
     },
     async (args) =>
@@ -249,6 +269,9 @@ export function buildServer(options: BuildServerOptions): McpServer {
         if (args.coach !== undefined) query.coach = args.coach;
         if (args.paid !== undefined) query.paid = args.paid;
         if (args.athlete !== undefined) query.athlete = args.athlete;
+        if (args.external_id) query.external_id = args.external_id;
+        if (args.external_provider) query.external_provider = args.external_provider;
+        if (args.external_calendar_id) query.external_calendar_id = args.external_calendar_id;
         const lessons = await client.listLessons(query);
         return {
           count: lessons.length,
@@ -608,6 +631,12 @@ export function buildServer(options: BuildServerOptions): McpServer {
           .describe('Must be true when the booking is late. The dry run tells you if it is.'),
         notes: z.string().nullish(),
         observer: z.string().nullish(),
+        external_ref: externalRefSchema
+          .optional()
+          .describe(
+            'Optionally link this lesson to the calendar event it mirrors (#62). Refused ' +
+              'with EXTERNAL_REF_CONFLICT if another active lesson already holds this event.',
+          ),
         dry_run: dryRunSchema,
         idempotency_key: idempotencyKeySchema,
       },
@@ -643,6 +672,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
         }
         if (args.notes !== undefined) body.notes = args.notes;
         if (args.observer !== undefined) body.observer = args.observer;
+        if (args.external_ref !== undefined) body.external_ref = args.external_ref;
 
         const result = await client.createLesson(
           body as Parameters<typeof client.createLesson>[0],
@@ -695,6 +725,13 @@ export function buildServer(options: BuildServerOptions): McpServer {
           .boolean()
           .optional()
           .describe('Required true if the new time is a late booking.'),
+        external_ref: externalRefSchema
+          .nullish()
+          .describe(
+            'Calendar link (#62). Pass the object to SET a link on a currently-unlinked ' +
+              'lesson; pass null to CLEAR the link; omit to leave it unchanged. Re-pointing ' +
+              'an already-linked lesson to a DIFFERENT event is refused (422) — clear it first.',
+          ),
         dry_run: dryRunSchema,
       },
     },
@@ -710,6 +747,8 @@ export function buildServer(options: BuildServerOptions): McpServer {
         if (args.late_booking_acknowledged !== undefined) {
           body.late_booking_acknowledged = args.late_booking_acknowledged;
         }
+        // undefined = leave unchanged; null = clear the link; object = set it.
+        if (args.external_ref !== undefined) body.external_ref = args.external_ref;
 
         if (Object.keys(body).length === 0) {
           throw new PrivateLessonsError('VALIDATION_FAILED', 'Nothing to update.', {

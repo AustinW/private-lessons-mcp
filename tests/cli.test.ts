@@ -170,16 +170,15 @@ describe('exit codes are mapped from the API error codes', () => {
   });
 
   it('exits 17 when no token is configured anywhere', async () => {
+    // Force env-only resolution so this never touches the real OS keychain — which can
+    // block on an authorization prompt or a locked store and make the test flaky/slow.
+    // That opt-out is exactly the headless/CI affordance we ship.
     const result = await run(['lessons', 'list'], {
       PRIVATE_LESSONS_TOKEN: '',
-      PRIVATE_LESSONS_PROFILE: 'a-profile-that-does-not-exist',
+      PRIVATE_LESSONS_NO_KEYCHAIN: '1',
     });
-    // Either NO_TOKEN (17) when the keychain is empty, or 0 if a real stored token for
-    // the default profile exists on this machine; assert only the failure shape.
-    if (result.code !== 0) {
-      expect(result.code).toBe(17);
-      expect(result.stderr).toContain('NO_TOKEN');
-    }
+    expect(result.code).toBe(17);
+    expect(result.stderr).toContain('NO_TOKEN');
   });
 
   it('exits 18 when the host is unreachable', async () => {
@@ -247,6 +246,44 @@ describe('--json output is a stable contract', () => {
   it('keeps human chatter off stdout in --json mode', async () => {
     const result = await run(['--json', 'lessons', 'list']);
     expect(() => JSON.parse(result.stdout)).not.toThrow();
+  });
+
+  it('sends the external reconcile tuple as query params on list (#62)', async () => {
+    const result = await run([
+      'lessons',
+      'list',
+      '--external-id',
+      'evt_1',
+      '--external-provider',
+      'google',
+      '--external-calendar-id',
+      'cal-A',
+    ]);
+    expect(result.code).toBe(0);
+    const req = seen.filter((r) => r.method === 'GET' && r.url.includes('/lessons?')).at(-1);
+    expect(req?.url).toContain('external_id=evt_1');
+    expect(req?.url).toContain('external_provider=google');
+    expect(req?.url).toContain('external_calendar_id=cal-A');
+  });
+
+  it('rejects a partial external calendar link with a usage error (#62)', async () => {
+    const result = await run([
+      'lessons',
+      'create',
+      '--coach',
+      '7',
+      '--athlete-ids',
+      '101',
+      '--at',
+      '2026-08-04T14:00:00-07:00',
+      '--duration',
+      '60',
+      '--acknowledge-fee',
+      '--external-provider',
+      'google', // only one of the three parts
+    ]);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('--external-provider, --external-id and --external-calendar-id together');
   });
 });
 

@@ -300,6 +300,9 @@ lessons
   .option('--to <date>', 'Inclusive end date, YYYY-MM-DD (Pacific).')
   .option('--coach <id>', 'Filter by coach user id.')
   .option('--athlete <id>', 'Filter by athlete id.')
+  .option('--external-id <id>', 'Reconcile lookup: linked calendar event id (pair with the two below).')
+  .option('--external-provider <name>', 'Reconcile lookup: calendar provider, e.g. google.')
+  .option('--external-calendar-id <id>', 'Reconcile lookup: the calendar the event lives in.')
   .addOption(new Option('--paid', 'Only paid lessons.').conflicts('unpaid'))
   .addOption(new Option('--unpaid', 'Only unpaid lessons.').conflicts('paid'))
   .action(async (opts, command: Command) => {
@@ -312,6 +315,10 @@ lessons
     if (opts.athlete) query.athlete = Number(opts.athlete);
     if (opts.paid) query.paid = true;
     if (opts.unpaid) query.paid = false;
+    // The unique identity is the full tuple; external_id alone can match several lessons.
+    if (opts.externalId) query.external_id = String(opts.externalId);
+    if (opts.externalProvider) query.external_provider = String(opts.externalProvider);
+    if (opts.externalCalendarId) query.external_calendar_id = String(opts.externalCalendarId);
     printLessons(await client.listLessons(query), g.json);
   });
 
@@ -334,6 +341,31 @@ lessons
     if (result.lesson.observer) info(`observer: ${result.lesson.observer}`, g);
   });
 
+/**
+ * Build an external calendar link from the three `--external-*` flags (#62). All three
+ * are required together (the tuple is the identity); returns undefined when none are given,
+ * and a usage error when only some are.
+ */
+function externalRefFrom(opts: {
+  externalProvider?: unknown;
+  externalId?: unknown;
+  externalCalendarId?: unknown;
+}): { provider: string; id: string; calendar_id: string } | undefined {
+  const parts = {
+    provider: opts.externalProvider as string | undefined,
+    id: opts.externalId as string | undefined,
+    calendar_id: opts.externalCalendarId as string | undefined,
+  };
+  const given = Object.values(parts).filter((v) => v !== undefined && v !== '');
+  if (given.length === 0) return undefined;
+  if (given.length !== 3) {
+    throw new PrivateLessonsError('USAGE_ERROR', 'An external calendar link needs all three parts.', {
+      detail: 'Pass --external-provider, --external-id and --external-calendar-id together.',
+    });
+  }
+  return { provider: parts.provider!, id: parts.id!, calendar_id: parts.calendar_id! };
+}
+
 lessons
   .command('create')
   .description(
@@ -352,6 +384,9 @@ lessons
   .requiredOption('--duration <minutes>', `One of ${DURATION_MINUTES.join(', ')}.`)
   .option('--notes <text>')
   .option('--observer <name>')
+  .option('--external-provider <name>', 'Link to a calendar event: provider, e.g. google (needs all three).')
+  .option('--external-id <id>', 'Link to a calendar event: the event id (needs all three).')
+  .option('--external-calendar-id <id>', 'Link to a calendar event: the calendar id (needs all three).')
   .option(
     '--acknowledge-fee',
     'Acknowledge the facility fee. Required by the API to book.',
@@ -430,6 +465,8 @@ lessons
     if (opts.acknowledgeLateBooking) body.late_booking_acknowledged = true;
     if (opts.notes !== undefined) body.notes = opts.notes;
     if (opts.observer !== undefined) body.observer = opts.observer;
+    const externalRef = externalRefFrom(opts);
+    if (externalRef) body.external_ref = externalRef;
 
     const key = typeof opts.idempotencyKey === 'string' ? opts.idempotencyKey : newIdempotencyKey();
     const result = await client.createLesson(
@@ -460,6 +497,10 @@ lessons
   .option('--clear-notes', 'Clear notes (sends an explicit null).', false)
   .option('--observer <name>', 'Set observer.')
   .option('--clear-observer', 'Clear observer (sends an explicit null).', false)
+  .option('--external-provider <name>', 'Link to a calendar event: provider (needs all three).')
+  .option('--external-id <id>', 'Link to a calendar event: the event id (needs all three).')
+  .option('--external-calendar-id <id>', 'Link to a calendar event: the calendar id (needs all three).')
+  .option('--clear-external-ref', 'Unlink the calendar event (sends an explicit null).', false)
   .option('--acknowledge-late-booking', 'Required when the new time is a late booking.', false)
   .option(
     '--if-match <etag>',
@@ -481,6 +522,21 @@ lessons
     if (opts.clearObserver) body.observer = null;
     else if (opts.observer !== undefined) body.observer = opts.observer;
     if (opts.acknowledgeLateBooking) body.late_booking_acknowledged = true;
+
+    // Calendar link (#62): --clear-external-ref sends null (unlink); the three
+    // --external-* flags set it. Re-pointing a linked lesson to a different event is a 422
+    // from the API — clear it first.
+    const externalRef = externalRefFrom(opts);
+    if (opts.clearExternalRef) {
+      if (externalRef) {
+        throw new PrivateLessonsError('USAGE_ERROR', 'Cannot set and clear the calendar link at once.', {
+          detail: 'Pass either --clear-external-ref or the three --external-* flags, not both.',
+        });
+      }
+      body.external_ref = null;
+    } else if (externalRef) {
+      body.external_ref = externalRef;
+    }
 
     if (Object.keys(body).length === 0) {
       throw new PrivateLessonsError('USAGE_ERROR', 'Nothing to update.', {

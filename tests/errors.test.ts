@@ -11,7 +11,7 @@ import {
   type ApiErrorCode,
 } from '../src/core/errors.js';
 
-/** The frozen 13. If the contract ever changes, this list must change with it. */
+/** The frozen 14. If the contract ever changes, this list must change with it. */
 const FROZEN_CODES: ApiErrorCode[] = [
   'VALIDATION_FAILED',
   'ATHLETE_NOT_FOUND',
@@ -26,12 +26,16 @@ const FROZEN_CODES: ApiErrorCode[] = [
   'RATE_LIMITED',
   'FACILITY_FEE_ACK_REQUIRED',
   'LATE_BOOKING_ACK_REQUIRED',
+  'EXTERNAL_REF_CONFLICT',
 ];
 
 describe('error taxonomy', () => {
-  it('recognises exactly the 13 contract codes', () => {
+  it('recognises exactly the 14 contract codes', () => {
     for (const code of FROZEN_CODES) expect(isApiErrorCode(code)).toBe(true);
     // Codes explicitly dropped from the taxonomy must not creep back in.
+    // DUPLICATE_SOURCE_EVENT was superseded by EXTERNAL_REF_CONFLICT (#62) and is NOT a
+    // real code — its store-only reference is nothing like the upstream-sync subsystem the
+    // old name implied — so it must still be rejected.
     for (const dropped of [
       'SLOT_FULL',
       'DUPLICATE_SOURCE_EVENT',
@@ -45,7 +49,9 @@ describe('error taxonomy', () => {
 
   it('maps every contract code to a distinct, stable exit code', () => {
     const codes = FROZEN_CODES.map((c) => exitCodeFor(c));
-    expect(codes).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    // The original 13 stay at 3-15; EXTERNAL_REF_CONFLICT was added later at 20 rather than
+    // renumbering the published 16-19 client range.
+    expect(codes).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20]);
     expect(new Set(codes).size).toBe(FROZEN_CODES.length);
   });
 

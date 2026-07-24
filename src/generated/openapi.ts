@@ -368,7 +368,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
-         * @description The fixed application error-code taxonomy. **Exactly these 13 values** — no others.
+         * @description The fixed application error-code taxonomy. **Exactly these 14 values** — no others.
          *     (`ATHLETE_AMBIGUOUS` is **client-surfaced**: the server always returns a plain 200
          *     candidate list from `GET /athletes`; a client/CLI/MCP resolving a name to a single
          *     athlete raises it when the search returns more than one match. The server never sets
@@ -376,7 +376,7 @@ export interface components {
          *     problem document.)
          * @enum {string}
          */
-        ErrorCode: "VALIDATION_FAILED" | "ATHLETE_NOT_FOUND" | "ATHLETE_AMBIGUOUS" | "LESSON_NOT_FOUND" | "SLOT_CONFLICT" | "OUTSIDE_BUSINESS_HOURS" | "VERSION_MISMATCH" | "IDEMPOTENCY_KEY_REUSED" | "INSUFFICIENT_SCOPE" | "FORBIDDEN" | "RATE_LIMITED" | "FACILITY_FEE_ACK_REQUIRED" | "LATE_BOOKING_ACK_REQUIRED";
+        ErrorCode: "VALIDATION_FAILED" | "ATHLETE_NOT_FOUND" | "ATHLETE_AMBIGUOUS" | "LESSON_NOT_FOUND" | "SLOT_CONFLICT" | "OUTSIDE_BUSINESS_HOURS" | "VERSION_MISMATCH" | "IDEMPOTENCY_KEY_REUSED" | "INSUFFICIENT_SCOPE" | "FORBIDDEN" | "RATE_LIMITED" | "FACILITY_FEE_ACK_REQUIRED" | "LATE_BOOKING_ACK_REQUIRED" | "EXTERNAL_REF_CONFLICT";
         /**
          * @description A Sanctum token ability (scope).
          * @enum {string}
@@ -440,6 +440,11 @@ export interface components {
         IdempotencyConflictProblem: components["schemas"]["ProblemDetails"] & {
             /** @constant */
             code?: "IDEMPOTENCY_KEY_REUSED";
+        };
+        /** @description A `ProblemDetails` whose `code` is constrained to `EXTERNAL_REF_CONFLICT` — a write would link a calendar event another active lesson already holds (issue #62). The offending provider + id are echoed in `errors.external_ref`. */
+        ExternalRefConflictProblem: components["schemas"]["ProblemDetails"] & {
+            /** @constant */
+            code?: "EXTERNAL_REF_CONFLICT";
         };
         /** @description Minimal athlete reference embedded in a lesson (safe for every role). */
         AthleteRef: {
@@ -505,6 +510,37 @@ export interface components {
             version: number;
             created_at: components["schemas"]["Rfc3339DateTime"];
             updated_at: components["schemas"]["Rfc3339DateTime"];
+            /** @description The external calendar event this lesson mirrors, or null when unlinked (issue #62). Released (set to null) when the lesson is cancelled. */
+            external_ref: components["schemas"]["ExternalRef"] | null;
+        };
+        /** @description An opaque link to the calendar event a lesson mirrors (issue #62). The server never calls the calendar provider — it only stores the reference. Identity is by `id`, never by timestamp; for a recurring series the client links per-instance. */
+        ExternalRef: {
+            /**
+             * @description The calendar system, e.g. `google`.
+             * @example google
+             */
+            provider: string;
+            /**
+             * @description The event (or recurring-instance) id within the provider's calendar.
+             * @example evt_ABC123
+             */
+            id: string;
+            /**
+             * @description Which calendar the event lives in — provider event ids are unique per-calendar.
+             * @example coach@example.com
+             */
+            calendar_id: string;
+            /** @description Server-stamped moment the link was last written. Read-only — a client never sets it. Absent from write bodies (`ExternalRefInput`). */
+            readonly synced_at?: components["schemas"]["Rfc3339DateTime"] | null;
+        };
+        /** @description The writable half of `ExternalRef` — what a create/update body may send. `synced_at` is omitted because it is server-stamped. */
+        ExternalRefInput: {
+            /** @example google */
+            provider: string;
+            /** @example evt_ABC123 */
+            id: string;
+            /** @example coach@example.com */
+            calendar_id: string;
         };
         /** @description Advisory facility-fee quote. Never binding; recalculated at create time. */
         PricingQuote: {
@@ -642,6 +678,8 @@ export interface components {
             late_booking_acknowledged: boolean;
             notes?: string | null;
             observer?: string | null;
+            /** @description Optionally link the new lesson to a calendar event (issue #62). A second active lesson for the same event is rejected with 409 EXTERNAL_REF_CONFLICT. */
+            external_ref?: components["schemas"]["ExternalRefInput"];
         };
         /** @description Partial update. **No athlete name field** — reassign via `athlete_ids`. An omitted field is left unchanged; a field sent as `null` clears it (nullable fields only). All fields optional; `If-Match` is required at the header level. */
         UpdateLessonRequest: {
@@ -655,6 +693,8 @@ export interface components {
             observer?: string | null;
             /** @description Required true when the update moves the lesson to a late start; else 422 LATE_BOOKING_ACK_REQUIRED. */
             late_booking_acknowledged?: boolean;
+            /** @description Link a calendar event to a currently-unlinked lesson, or send `null` to unlink it (issue #62). Re-pointing an already-linked lesson to a DIFFERENT event is rejected with 422 VALIDATION_FAILED — clear it first. Omit to leave unchanged. */
+            external_ref?: components["schemas"]["ExternalRefInput"] | null;
         };
         /** @description Optional cancel body. `If-Match` is required at the header level. */
         CancelLessonRequest: {
@@ -696,14 +736,14 @@ export interface components {
                 "application/problem+json": components["schemas"]["ProblemDetails"];
             };
         };
-        /** @description The coach already has a lesson overlapping the requested window (`SLOT_CONFLICT`). Not retryable — change the time or coach. */
+        /** @description A PATCH conflict (`retryable: false`): `SLOT_CONFLICT` when the reschedule overlaps an existing lesson for the coach (change the time or coach), or `EXTERNAL_REF_CONFLICT` when the `external_ref` being set is already held by another active lesson (issue #62). Generated clients should model both codes in the union. */
         SlotConflict: {
             headers: {
                 "X-Request-Id": components["headers"]["XRequestId"];
                 [name: string]: unknown;
             };
             content: {
-                "application/problem+json": components["schemas"]["SlotConflictProblem"];
+                "application/problem+json": components["schemas"]["SlotConflictProblem"] | components["schemas"]["ExternalRefConflictProblem"];
             };
         };
         /** @description An `Idempotency-Key` conflict (`IDEMPOTENCY_KEY_REUSED`). Covers both a same-key/different-body reuse (`retryable: false`) and a concurrent same-key request still in progress (`retryable: true`, with `Retry-After`). */
@@ -717,7 +757,7 @@ export interface components {
                 "application/problem+json": components["schemas"]["IdempotencyConflictProblem"];
             };
         };
-        /** @description A create-lesson conflict: either `SLOT_CONFLICT` (coach already booked in the window, `retryable: false`) or `IDEMPOTENCY_KEY_REUSED` (same-key/different-body reuse, `retryable: false`; or a concurrent in-progress request, `retryable: true` with `Retry-After`). Generated clients should model both codes in the 409 error union. */
+        /** @description A create-lesson conflict: `SLOT_CONFLICT` (coach already booked in the window, `retryable: false`), `IDEMPOTENCY_KEY_REUSED` (same-key/different-body reuse, `retryable: false`; or a concurrent in-progress request, `retryable: true` with `Retry-After`), or `EXTERNAL_REF_CONFLICT` (the `external_ref` is already held by another active lesson, `retryable: false`). Generated clients should model all three codes in the 409 error union. */
         LessonCreateConflict: {
             headers: {
                 "X-Request-Id": components["headers"]["XRequestId"];
@@ -725,7 +765,7 @@ export interface components {
                 [name: string]: unknown;
             };
             content: {
-                "application/problem+json": components["schemas"]["SlotConflictProblem"] | components["schemas"]["IdempotencyConflictProblem"];
+                "application/problem+json": components["schemas"]["SlotConflictProblem"] | components["schemas"]["IdempotencyConflictProblem"] | components["schemas"]["ExternalRefConflictProblem"];
             };
         };
         /** @description The `If-Match` ETag did not match the current lesson version. The current version is returned in `current_version`; re-fetch, re-apply, and retry with a fresh `If-Match`. */
@@ -827,11 +867,14 @@ export type SchemaRfc3339DateTime = components['schemas']['Rfc3339DateTime'];
 export type SchemaProblemDetails = components['schemas']['ProblemDetails'];
 export type SchemaSlotConflictProblem = components['schemas']['SlotConflictProblem'];
 export type SchemaIdempotencyConflictProblem = components['schemas']['IdempotencyConflictProblem'];
+export type SchemaExternalRefConflictProblem = components['schemas']['ExternalRefConflictProblem'];
 export type SchemaAthleteRef = components['schemas']['AthleteRef'];
 export type SchemaAthleteCoachView = components['schemas']['AthleteCoachView'];
 export type SchemaAthleteAdminView = components['schemas']['AthleteAdminView'];
 export type SchemaAthlete = components['schemas']['Athlete'];
 export type SchemaLesson = components['schemas']['Lesson'];
+export type SchemaExternalRef = components['schemas']['ExternalRef'];
+export type SchemaExternalRefInput = components['schemas']['ExternalRefInput'];
 export type SchemaPricingQuote = components['schemas']['PricingQuote'];
 export type SchemaAvailability = components['schemas']['Availability'];
 export type SchemaAvailabilitySlot = components['schemas']['AvailabilitySlot'];
@@ -910,6 +953,12 @@ export interface operations {
                 paid?: boolean;
                 /** @description Filter to lessons that include this athlete id. */
                 athlete?: number;
+                /** @description Filter to lessons linked to this external calendar event id (issue #62) — the agent's reconcile lookup. The unique identity is the full (`external_provider`, `external_id`, `external_calendar_id`) tuple — the same event id can exist in two calendars — so pair this with `external_provider` and `external_calendar_id` to address a single lesson. Combined with the caller's visibility scope, so it can only ever narrow. */
+                external_id?: string;
+                /** @description Filter by the external calendar provider (e.g. `google`); part of the reconcile tuple (#62). */
+                external_provider?: string;
+                /** @description Filter by the external calendar id the event lives in; part of the reconcile tuple (#62). */
+                external_calendar_id?: string;
             };
             header?: {
                 /**

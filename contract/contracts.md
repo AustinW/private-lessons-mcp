@@ -2,7 +2,7 @@
 
 This document freezes the contracts that the OpenAPI document (`docs/api/openapi.yaml`)
 cannot express, so Phases 2–7 build without re-litigation. It is the companion to that
-OpenAPI file and **must stay consistent with it**: the same 13 error codes, the same DTO
+OpenAPI file and **must stay consistent with it**: the same 14 error codes, the same DTO
 field names, the same timestamp rule, and the same scope mapping appear in both. If a
 downstream reader finds these two files disagreeing, that is a bug in this phase.
 
@@ -20,7 +20,7 @@ implement; PHP type names are prescriptive, not existing.
 
 Every application error is emitted as an RFC 9457 problem document
 (`application/problem+json` → `ProblemDetails`) with a `code` drawn from the fixed
-**13-value** enum. The API controller/exception handler translates domain exceptions (and
+**14-value** enum. The API controller/exception handler translates domain exceptions (and
 a few non-exception conditions handled by middleware / form-request validation) into these
 responses. The web controller catches the *same* domain exceptions and renders
 `back()->withErrors([...])` instead, preserving current UX — this is how "web and API
@@ -42,15 +42,19 @@ cannot diverge" is enforced.
 | Per-token throttle exceeded | 429 | `RATE_LIMITED` | true | `Retry-After` header. |
 | `FeeAcknowledgementRequiredException` — `fee_acknowledged` not `true` on `POST /lessons` | 422 | `FACILITY_FEE_ACK_REQUIRED` | false | Recorded in the audit event. |
 | `LateBookingAcknowledgementRequiredException` — late booking without `late_booking_acknowledged: true` | 422 | `LATE_BOOKING_ACK_REQUIRED` | false | Recorded in the audit event. Deliberate divergence from the web JS-only warning (§13.2). |
+| `ExternalRefConflictException` — a write would link a calendar event another **active** lesson already holds | 409 | `EXTERNAL_REF_CONFLICT` | false | Offending provider + id echoed in `errors.external_ref`. Backed by a unique index; cancelled lessons release their link so they never collide (issue #62). |
 
-**Complete code set (exactly 13, no others):** `VALIDATION_FAILED`, `ATHLETE_NOT_FOUND`,
+**Complete code set (exactly 14, no others):** `VALIDATION_FAILED`, `ATHLETE_NOT_FOUND`,
 `ATHLETE_AMBIGUOUS`, `LESSON_NOT_FOUND`, `SLOT_CONFLICT`, `OUTSIDE_BUSINESS_HOURS`,
 `VERSION_MISMATCH`, `IDEMPOTENCY_KEY_REUSED`, `INSUFFICIENT_SCOPE`, `FORBIDDEN`,
-`RATE_LIMITED`, `FACILITY_FEE_ACK_REQUIRED`, `LATE_BOOKING_ACK_REQUIRED`.
+`RATE_LIMITED`, `FACILITY_FEE_ACK_REQUIRED`, `LATE_BOOKING_ACK_REQUIRED`,
+`EXTERNAL_REF_CONFLICT`.
 
-**Dropped codes (do NOT introduce):** `SLOT_FULL`, `DUPLICATE_SOURCE_EVENT`,
-`PREVIEW_STALE`, `QUOTE_EXPIRED`, `UPSTREAM_UNAVAILABLE` — each named a subsystem this
-project does not build.
+**Dropped codes (do NOT introduce):** `SLOT_FULL`, `PREVIEW_STALE`, `QUOTE_EXPIRED`,
+`UPSTREAM_UNAVAILABLE` — each named a subsystem this project does not build. (The
+originally-dropped `DUPLICATE_SOURCE_EVENT` was superseded by `EXTERNAL_REF_CONFLICT` when
+issue #62 added external calendar linking — a store-only reference, not the upstream-sync
+subsystem the old code implied.)
 
 ### Exception inventory
 
@@ -68,7 +72,7 @@ respectively — not by the action classes.
 
 A missing / invalid / expired / revoked token is rejected by the Sanctum auth layer with
 **401** before the application error model runs. 401 is intentionally **outside** the
-13-code taxonomy (no code denotes "unauthenticated"), so it is not represented as a
+14-code taxonomy (no code denotes "unauthenticated"), so it is not represented as a
 `ProblemDetails` response in the OpenAPI document. Authenticated-but-unauthorized is
 `403` (`INSUFFICIENT_SCOPE` or `FORBIDDEN`).
 
@@ -357,7 +361,7 @@ shape that OpenAPI cannot fully express.
   body but **mints a fresh `request_id`** (transport metadata is not replayed).
 - Same key + **different** body → `409 IDEMPOTENCY_KEY_REUSED` (`retryable: false`).
 - Concurrent duplicate while **in progress** → `409` with the **same** code
-  `IDEMPOTENCY_KEY_REUSED` but `retryable: true` and a `Retry-After` header. (The 13-code
+  `IDEMPOTENCY_KEY_REUSED` but `retryable: true` and a `Retry-After` header. (The 14-code
   enum has one idempotency code; the two 409 situations are disambiguated by `retryable`.)
 - Only 2xx/4xx responses are stored, **with the exception of `401`/`403`**; **5xx is never
   cached** (a transient failure stays retryable). TTL is 24h, enforced at lookup (an
@@ -399,7 +403,7 @@ shape that OpenAPI cannot fully express.
 
 ## 7. Consistency checklist (openapi.yaml ↔ contracts.md)
 
-- **Error codes:** identical 13-value set; identical dropped set. ✔
+- **Error codes:** identical 14-value set; identical dropped set. ✔
 - **DTO field names:** the DTO→wire mapping tables in §2 name the exact snake_case fields
   used in the OpenAPI request bodies (`CreateLessonRequest`, `UpdateLessonRequest`,
   `CancelLessonRequest`, `MarkLessonPaidRequest`, `CreateAthleteRequest`). ✔
@@ -424,7 +428,7 @@ shape that OpenAPI cannot fully express.
   `IdempotencyConflictProblem` (`code` const `IDEMPOTENCY_KEY_REUSED`) on cancel, mark-paid,
   create-athlete; `LessonCreateConflict` → `oneOf` of those two on create-lesson. Each narrowed
   problem is `allOf: [ProblemDetails, {code: const …}]`, so a codegen tool sees a single-value
-  `code` union per 409 (the base `ProblemDetails` and the 13-value `ErrorCode` enum are
+  `code` union per 409 (the base `ProblemDetails` and the 14-value `ErrorCode` enum are
   unchanged). ✔
 
 ---

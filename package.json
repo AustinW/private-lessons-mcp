@@ -1,6 +1,6 @@
 {
   "name": "@scorsync/private-lessons",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "description": "MCP server and CLI for the Private Lessons REST API. The HTTP client is generated from contract/openapi.yaml.",
   "license": "MIT",

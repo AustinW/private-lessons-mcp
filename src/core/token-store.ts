@@ -36,7 +36,21 @@ interface KeyringModule {
 
 let keyringPromise: Promise<KeyringModule | null> | undefined;
 
+/**
+ * Force env-only mode, skipping the OS credential store entirely, when
+ * `PRIVATE_LESSONS_NO_KEYCHAIN` is set to a truthy value. This is the escape hatch for
+ * headless / CI / sandboxed environments where a keychain call can block on an
+ * authorization prompt or a locked store — there, resolution is env-var-only and every
+ * keychain path (`getToken`, `setToken`, `keychainAvailable`) degrades exactly as it does
+ * on a platform with no binding.
+ */
+function keychainDisabled(): boolean {
+  const flag = process.env.PRIVATE_LESSONS_NO_KEYCHAIN?.trim().toLowerCase();
+  return flag !== undefined && flag !== '' && flag !== '0' && flag !== 'false';
+}
+
 async function loadKeyring(): Promise<KeyringModule | null> {
+  if (keychainDisabled()) return null;
   keyringPromise ??= import('@napi-rs/keyring')
     .then((mod) => mod as unknown as KeyringModule)
     .catch(() => null);

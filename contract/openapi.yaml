@@ -18,7 +18,7 @@ info:
 
     A missing, invalid, expired, or revoked token is rejected by the Sanctum auth layer
     with **HTTP 401** before the application error model applies. 401 is therefore a
-    framework-level response and is intentionally *not* part of the 13-code application
+    framework-level response and is intentionally *not* part of the 14-code application
     error taxonomy below (none of the codes denote "unauthenticated"). Authenticated-but-
     unauthorized conditions use `403` with code `INSUFFICIENT_SCOPE` (missing scope) or
     `FORBIDDEN` (policy denies).
@@ -64,7 +64,7 @@ info:
 
     ## Errors
     All error responses use `application/problem+json` (RFC 9457) with the `ProblemDetails`
-    schema. Every application error carries a `code` from the fixed 13-value enum.
+    schema. Every application error carries a `code` from the fixed 14-value enum.
 
     ## Rate limiting
     Per-token throttling returns `429` with `code: RATE_LIMITED` and a `Retry-After` header.
@@ -211,6 +211,30 @@ paths:
           description: Filter to lessons that include this athlete id.
           schema:
             type: integer
+        - name: external_id
+          in: query
+          required: false
+          description: >-
+            Filter to lessons linked to this external calendar event id (issue #62) — the
+            agent's reconcile lookup. The unique identity is the full
+            (`external_provider`, `external_id`, `external_calendar_id`) tuple — the same
+            event id can exist in two calendars — so pair this with `external_provider` and
+            `external_calendar_id` to address a single lesson. Combined with the caller's
+            visibility scope, so it can only ever narrow.
+          schema:
+            type: string
+        - name: external_provider
+          in: query
+          required: false
+          description: Filter by the external calendar provider (e.g. `google`); part of the reconcile tuple (#62).
+          schema:
+            type: string
+        - name: external_calendar_id
+          in: query
+          required: false
+          description: Filter by the external calendar id the event lives in; part of the reconcile tuple (#62).
+          schema:
+            type: string
       responses:
         '200':
           description: Matching lessons.
@@ -1071,7 +1095,7 @@ components:
         missing a required scope receives `403` with code `INSUFFICIENT_SCOPE`; a token with
         the scope but denied by policy receives `403` with code `FORBIDDEN`. A missing /
         invalid / expired / revoked token is rejected by the auth layer with `401` (framework
-        level, outside the 13-code application taxonomy).
+        level, outside the 14-code application taxonomy).
 
         Waiver status is read-only through every scope.
 
@@ -1212,6 +1236,11 @@ components:
           version: 3
           created_at: '2026-07-28T09:31:02-07:00'
           updated_at: '2026-08-01T16:20:44-07:00'
+          external_ref:
+            provider: google
+            id: evt_ABC123
+            calendar_id: coach@example.com
+            synced_at: '2026-08-01T16:20:44-07:00'
     LessonList:
       summary: Two lessons for the week (a Coach token sees only its own).
       value:
@@ -1239,6 +1268,7 @@ components:
             version: 3
             created_at: '2026-07-28T09:31:02-07:00'
             updated_at: '2026-08-01T16:20:44-07:00'
+            external_ref: null
           - id: 43
             coach_id: 7
             coach_name: Dana Smith
@@ -1262,6 +1292,7 @@ components:
             version: 2
             created_at: '2026-07-29T11:02:10-07:00'
             updated_at: '2026-08-05T18:05:00-07:00'
+            external_ref: null
     CreateLessonBody:
       summary: Book Ava Reyes with coach 7 at 2:00 PM Pacific, fee acknowledged.
       value:
@@ -1307,6 +1338,7 @@ components:
           version: 1
           created_at: '2026-07-28T09:31:02-07:00'
           updated_at: '2026-07-28T09:31:02-07:00'
+          external_ref: null
     UpdateLessonBody:
       summary: Reschedule 30 minutes later and clear the note (null clears, omission leaves alone).
       value:
@@ -1339,6 +1371,7 @@ components:
           version: 4
           created_at: '2026-07-28T09:31:02-07:00'
           updated_at: '2026-08-02T08:11:19-07:00'
+          external_ref: null
     CancelLessonBody:
       summary: Cancel with a reason (recorded on the audit event).
       value:
@@ -1370,6 +1403,7 @@ components:
           version: 4
           created_at: '2026-07-28T09:31:02-07:00'
           updated_at: '2026-08-03T10:45:00-07:00'
+          external_ref: null
     MarkLessonPaidBody:
       summary: Record payment at an explicit time (omit or send null for "now").
       value:
@@ -1401,6 +1435,7 @@ components:
           version: 4
           created_at: '2026-07-28T09:31:02-07:00'
           updated_at: '2026-08-04T15:10:00-07:00'
+          external_ref: null
     AvailabilityDay:
       summary: Three bookable 60-minute windows left on 2026-08-04.
       value:
@@ -1606,15 +1641,19 @@ components:
                 retryable: false
     SlotConflict:
       description: >-
-        The coach already has a lesson overlapping the requested window (`SLOT_CONFLICT`).
-        Not retryable — change the time or coach.
+        A PATCH conflict (`retryable: false`): `SLOT_CONFLICT` when the reschedule overlaps
+        an existing lesson for the coach (change the time or coach), or
+        `EXTERNAL_REF_CONFLICT` when the `external_ref` being set is already held by another
+        active lesson (issue #62). Generated clients should model both codes in the union.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
       content:
         application/problem+json:
           schema:
-            $ref: '#/components/schemas/SlotConflictProblem'
+            oneOf:
+              - $ref: '#/components/schemas/SlotConflictProblem'
+              - $ref: '#/components/schemas/ExternalRefConflictProblem'
           examples:
             slot_conflict:
               summary: The coach already has a lesson overlapping this window.
@@ -1629,6 +1668,19 @@ components:
                 errors:
                   scheduled_at:
                     - This time overlaps an existing lesson.
+            external_ref_conflict:
+              summary: The calendar event is already linked to another active lesson.
+              value:
+                type: https://private-lessons.scorsync.com/errors/external-ref-conflict
+                title: Calendar event already linked
+                status: 409
+                detail: Another lesson is already linked to this calendar event.
+                code: EXTERNAL_REF_CONFLICT
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                errors:
+                  external_ref:
+                    - The google event "evt_ABC123" is already linked to another lesson.
     IdempotencyConflict:
       description: >-
         An `Idempotency-Key` conflict (`IDEMPOTENCY_KEY_REUSED`). Covers both a
@@ -1666,10 +1718,12 @@ components:
                 retryable: true
     LessonCreateConflict:
       description: >-
-        A create-lesson conflict: either `SLOT_CONFLICT` (coach already booked in the window,
-        `retryable: false`) or `IDEMPOTENCY_KEY_REUSED` (same-key/different-body reuse,
+        A create-lesson conflict: `SLOT_CONFLICT` (coach already booked in the window,
+        `retryable: false`), `IDEMPOTENCY_KEY_REUSED` (same-key/different-body reuse,
         `retryable: false`; or a concurrent in-progress request, `retryable: true` with
-        `Retry-After`). Generated clients should model both codes in the 409 error union.
+        `Retry-After`), or `EXTERNAL_REF_CONFLICT` (the `external_ref` is already held by
+        another active lesson, `retryable: false`). Generated clients should model all three
+        codes in the 409 error union.
       headers:
         X-Request-Id:
           $ref: '#/components/headers/XRequestId'
@@ -1681,6 +1735,7 @@ components:
             oneOf:
               - $ref: '#/components/schemas/SlotConflictProblem'
               - $ref: '#/components/schemas/IdempotencyConflictProblem'
+              - $ref: '#/components/schemas/ExternalRefConflictProblem'
           examples:
             slot_conflict:
               summary: The coach already has a lesson overlapping this window.
@@ -1715,6 +1770,19 @@ components:
                 code: IDEMPOTENCY_KEY_REUSED
                 request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
                 retryable: true
+            external_ref_conflict:
+              summary: The calendar event is already linked to another active lesson.
+              value:
+                type: https://private-lessons.scorsync.com/errors/external-ref-conflict
+                title: Calendar event already linked
+                status: 409
+                detail: Another lesson is already linked to this calendar event.
+                code: EXTERNAL_REF_CONFLICT
+                request_id: 01J8Z9Q2K3R4S5T6U7V8W9X0Y1
+                retryable: false
+                errors:
+                  external_ref:
+                    - The google event "evt_ABC123" is already linked to another lesson.
     PreconditionFailed:
       description: >-
         The `If-Match` ETag did not match the current lesson version. The current version
@@ -1838,7 +1906,7 @@ components:
     ErrorCode:
       type: string
       description: |
-        The fixed application error-code taxonomy. **Exactly these 13 values** — no others.
+        The fixed application error-code taxonomy. **Exactly these 14 values** — no others.
         (`ATHLETE_AMBIGUOUS` is **client-surfaced**: the server always returns a plain 200
         candidate list from `GET /athletes`; a client/CLI/MCP resolving a name to a single
         athlete raises it when the search returns more than one match. The server never sets
@@ -1858,6 +1926,9 @@ components:
         - RATE_LIMITED
         - FACILITY_FEE_ACK_REQUIRED
         - LATE_BOOKING_ACK_REQUIRED
+        # A write would link a lesson to a calendar event another ACTIVE lesson already
+        # holds (409). The unique index is the backstop; this is the deterministic surface.
+        - EXTERNAL_REF_CONFLICT
 
     Scope:
       type: string
@@ -1992,6 +2063,18 @@ components:
             code:
               const: IDEMPOTENCY_KEY_REUSED
 
+    ExternalRefConflictProblem:
+      description: >-
+        A `ProblemDetails` whose `code` is constrained to `EXTERNAL_REF_CONFLICT` — a write
+        would link a calendar event another active lesson already holds (issue #62). The
+        offending provider + id are echoed in `errors.external_ref`.
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          properties:
+            code:
+              const: EXTERNAL_REF_CONFLICT
+
     AthleteRef:
       type: object
       description: Minimal athlete reference embedded in a lesson (safe for every role).
@@ -2077,6 +2160,7 @@ components:
         - version
         - created_at
         - updated_at
+        - external_ref
       properties:
         id:
           type: integer
@@ -2151,6 +2235,73 @@ components:
           $ref: '#/components/schemas/Rfc3339DateTime'
         updated_at:
           $ref: '#/components/schemas/Rfc3339DateTime'
+        external_ref:
+          oneOf:
+            - $ref: '#/components/schemas/ExternalRef'
+            - type: 'null'
+          description: >-
+            The external calendar event this lesson mirrors, or null when unlinked
+            (issue #62). Released (set to null) when the lesson is cancelled.
+
+    ExternalRef:
+      type: object
+      description: >-
+        An opaque link to the calendar event a lesson mirrors (issue #62). The server
+        never calls the calendar provider — it only stores the reference. Identity is by
+        `id`, never by timestamp; for a recurring series the client links per-instance.
+      additionalProperties: false
+      required:
+        - provider
+        - id
+        - calendar_id
+      properties:
+        provider:
+          type: string
+          maxLength: 64
+          description: The calendar system, e.g. `google`.
+          example: google
+        id:
+          type: string
+          maxLength: 255
+          description: The event (or recurring-instance) id within the provider's calendar.
+          example: evt_ABC123
+        calendar_id:
+          type: string
+          maxLength: 255
+          description: Which calendar the event lives in — provider event ids are unique per-calendar.
+          example: coach@example.com
+        synced_at:
+          oneOf:
+            - $ref: '#/components/schemas/Rfc3339DateTime'
+            - type: 'null'
+          readOnly: true
+          description: >-
+            Server-stamped moment the link was last written. Read-only — a client never
+            sets it. Absent from write bodies (`ExternalRefInput`).
+
+    ExternalRefInput:
+      type: object
+      description: >-
+        The writable half of `ExternalRef` — what a create/update body may send. `synced_at`
+        is omitted because it is server-stamped.
+      additionalProperties: false
+      required:
+        - provider
+        - id
+        - calendar_id
+      properties:
+        provider:
+          type: string
+          maxLength: 64
+          example: google
+        id:
+          type: string
+          maxLength: 255
+          example: evt_ABC123
+        calendar_id:
+          type: string
+          maxLength: 255
+          example: coach@example.com
 
     PricingQuote:
       type: object
@@ -2461,6 +2612,11 @@ components:
           type:
             - string
             - 'null'
+        external_ref:
+          $ref: '#/components/schemas/ExternalRefInput'
+          description: >-
+            Optionally link the new lesson to a calendar event (issue #62). A second
+            active lesson for the same event is rejected with 409 EXTERNAL_REF_CONFLICT.
 
     UpdateLessonRequest:
       type: object
@@ -2494,6 +2650,14 @@ components:
         late_booking_acknowledged:
           type: boolean
           description: Required true when the update moves the lesson to a late start; else 422 LATE_BOOKING_ACK_REQUIRED.
+        external_ref:
+          oneOf:
+            - $ref: '#/components/schemas/ExternalRefInput'
+            - type: 'null'
+          description: >-
+            Link a calendar event to a currently-unlinked lesson, or send `null` to unlink
+            it (issue #62). Re-pointing an already-linked lesson to a DIFFERENT event is
+            rejected with 422 VALIDATION_FAILED — clear it first. Omit to leave unchanged.
 
     CancelLessonRequest:
       type: object

@@ -92,6 +92,11 @@ Resolution order:
 There is no default host. Guessing one would mean sending a bearer token somewhere the
 operator did not name.
 
+Set `PRIVATE_LESSONS_NO_KEYCHAIN=1` to skip the OS credential store entirely and resolve
+the token from `PRIVATE_LESSONS_TOKEN` only. Use it on a headless / CI / sandboxed box
+where a keychain call can block on an authorization prompt or a locked store — resolution
+then degrades to env-var-only, exactly as on a platform with no keyring binding.
+
 ```bash
 export PRIVATE_LESSONS_BASE_URL=https://private-lessons.scorsync.com/api/v1
 private-lessons auth status      # shows the source; never prints the token
@@ -163,14 +168,14 @@ protocol frames.
 
 | Tool | Kind | Notes |
 |---|---|---|
-| `private_lessons_list_lessons` | read | Scoped by the token's visibility. |
+| `private_lessons_list_lessons` | read | Scoped by the token's visibility. Reconcile filters: `external_id` + `external_provider` + `external_calendar_id`. |
 | `private_lessons_get_lesson` | read | Returns the strong ETag to use as `if_match`. |
 | `private_lessons_check_availability` | read | Bookable windows for a coach on one Pacific date. |
 | `private_lessons_get_quote` | read | Advisory server-computed fee. |
 | `private_lessons_search_athletes` | read | Step 1 of the two-step write flow. |
 | `private_lessons_create_athlete` | **write** | dry-run, auto `Idempotency-Key`. |
-| `private_lessons_create_lesson` | **write** | dry-run, auto `Idempotency-Key`. |
-| `private_lessons_update_lesson` | **write** | dry-run, requires `if_match`. |
+| `private_lessons_create_lesson` | **write** | dry-run, auto `Idempotency-Key`. Optional `external_ref`. |
+| `private_lessons_update_lesson` | **write** | dry-run, requires `if_match`. `external_ref` sets/clears the link. |
 | `private_lessons_cancel_lesson` | **write, destructive** | dry-run, requires `if_match`. |
 | `private_lessons_mark_lesson_paid` | **write, destructive** | dry-run, requires `if_match`. |
 | `private_lessons_get_balance` | read | What a coach owes the gym. |
@@ -212,6 +217,31 @@ never an HTTP status and never appears in a problem document.
 The tool descriptions state this explicitly and instruct the caller to stop and ask the
 user when a search returns more than one candidate — not to pick the first, the closest,
 or the most recently created.
+
+### External calendar linking
+
+A lesson can carry an opaque link to the calendar event it mirrors, so an agent
+reconciling a coach's Google Calendar imports, updates, and cancels lessons **without ever
+duplicating one**. The API stores the reference only — it never calls Google; the agent
+brings that half.
+
+The reconcile loop:
+
+1. **look up** — `private_lessons_list_lessons` filtered by the event's
+   `external_id` + `external_provider` + `external_calendar_id`. Identity is the **full
+   tuple** (the same event id can exist in two calendars), so pass all three; `external_id`
+   alone can return several.
+2. **absent → create** — `private_lessons_create_lesson` with `external_ref`. A second
+   *active* lesson for the same tuple is refused with `EXTERNAL_REF_CONFLICT` (exit 20), so
+   a duplicate import is structurally impossible.
+3. **present → update** — `private_lessons_update_lesson` with `if_match`. Pass
+   `external_ref` to set a link on an unlinked lesson, or `null` to clear it. Re-pointing a
+   linked lesson to a *different* event is refused (422) — clear it first.
+4. **event deleted → cancel** — `private_lessons_cancel_lesson`. Cancelling **releases**
+   the link, so a later re-import of a restored event succeeds.
+
+`synced_at` on the returned `external_ref` is server-stamped. Recurring events link
+**per instance** — send the instance id, never the series id.
 
 ---
 
@@ -314,7 +344,7 @@ create time, and there is no quote token to expire.
 
 ## Exit codes
 
-Exit codes are mapped from the API's 13 frozen error codes. These values are part of the
+Exit codes are mapped from the API's 14 frozen error codes. These values are part of the
 CLI's interface and will not be renumbered. 126, 127, and 128+ are avoided because POSIX
 shells reserve them.
 
@@ -340,6 +370,7 @@ shells reserve them.
 | 17 | `NO_TOKEN` | No token in the environment or the credential store. |
 | 18 | `NETWORK_ERROR` | The API could not be reached. |
 | 19 | `ABORTED` | A destructive action was not confirmed. Nothing was written. |
+| 20 | `EXTERNAL_REF_CONFLICT` | Another active lesson already links to this calendar event. Added after 3–19 was published, so it takes 20 rather than renumbering. |
 
 Errors print `code`, `detail`, any field errors, and the `request_id` — never a raw JSON
 blob. Quote the `request_id` when reporting a problem; it correlates to the server's logs
