@@ -17,6 +17,7 @@
  *    return `409 SLOT_CONFLICT` if something is booked in between.
  */
 
+import { platformFeeCents } from './fees.js';
 import type { Availability, DurationMinutes, PricingQuote, PrivateLessonsClient } from './client.js';
 import { formatPacific, pacificDate, parseRfc3339, TENANT_TIMEZONE } from './time.js';
 
@@ -128,7 +129,10 @@ export async function preflightLesson(
   ]);
 
   if (quoteOutcome.status === 'fulfilled') {
-    result.quote = quoteOutcome.value;
+    result.quote = {
+      ...quoteOutcome.value,
+      platform_fee_cents: platformFeeCents(quoteOutcome.value),
+    };
     if (quoteOutcome.value.is_late_booking) {
       result.warnings.push(
         'This is a LATE BOOKING. `late_booking_acknowledged: true` is required, ' +

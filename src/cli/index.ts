@@ -25,6 +25,7 @@ import {
 } from '../core/client.js';
 import { formatETag, newIdempotencyKey, resolveIfMatch } from '../core/concurrency.js';
 import { EXIT_CODES, PrivateLessonsError, toPrivateLessonsError } from '../core/errors.js';
+import { lessonOwedCents, normalizeBalance, platformFeeCents } from '../core/fees.js';
 import { preflightLesson } from '../core/preflight.js';
 import { openSession, type Session } from '../core/session.js';
 import {
@@ -107,11 +108,6 @@ function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-/** What the coach owes for a lesson: facility fee (after override/waiver) + platform fee. */
-function lessonTotalCents(lesson: Lesson): number {
-  return lesson.effective_cost_cents + lesson.platform_fee_cents;
-}
-
 /**
  * `$16.00 ($15.00 facility + $1.00 platform)`. With no platform fee the breakdown adds
  * nothing, so the old single amount is shown.
@@ -125,7 +121,7 @@ function feeText(facilityCents: number, platformCents: number): string {
 }
 
 function lessonFeeText(lesson: Lesson): string {
-  return feeText(lesson.effective_cost_cents, lesson.platform_fee_cents);
+  return feeText(lesson.effective_cost_cents, platformFeeCents(lesson));
 }
 
 function lessonRow(lesson: Lesson): Array<string | number | null> {
@@ -135,7 +131,7 @@ function lessonRow(lesson: Lesson): Array<string | number | null> {
     `${lesson.duration_minutes}m`,
     lesson.coach_name ?? lesson.coach_id,
     lesson.athletes.map((a) => a.name).join(', '),
-    (lessonTotalCents(lesson) / 100).toFixed(2),
+    (lessonOwedCents(lesson) / 100).toFixed(2),
     lesson.cancelled_at ? 'cancelled' : lesson.paid_at ? 'paid' : 'unpaid',
     `v${lesson.version}`,
   ];
@@ -448,7 +444,7 @@ lessons
       info(`  ends     ${preflight.ends_at_pacific}`, g);
       if (preflight.quote) {
         info(
-          `  fee      ${feeText(preflight.quote.cost_cents, preflight.quote.platform_fee_cents)} (advisory)`,
+          `  fee      ${feeText(preflight.quote.cost_cents, platformFeeCents(preflight.quote))} (advisory)`,
           g,
         );
         info(`  basis    ${preflight.quote.breakdown}`, g);
@@ -724,9 +720,9 @@ lessons
         dry_run: true,
         lesson: current.lesson,
         when_pacific: formatPacific(current.lesson.scheduled_at),
-        amount_cents: lessonTotalCents(current.lesson),
+        amount_cents: lessonOwedCents(current.lesson),
         facility_fee_cents: current.lesson.effective_cost_cents,
-        platform_fee_cents: current.lesson.platform_fee_cents,
+        platform_fee_cents: platformFeeCents(current.lesson),
         already_paid: current.lesson.paid_at != null,
         if_match_to_use: etag,
       };
@@ -948,7 +944,7 @@ program
   .action(async (opts, command: Command) => {
     const g = globals(command);
     const { client } = await session(command);
-    const all = await client.listBalances();
+    const all = (await client.listBalances()).map(normalizeBalance);
     const balances = opts.coach
       ? all.filter((b) => b.coach_id === Number(opts.coach))
       : all;

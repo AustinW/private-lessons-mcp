@@ -32,6 +32,7 @@ import {
 } from '../core/client.js';
 import { formatETag, parseETag } from '../core/concurrency.js';
 import { PrivateLessonsError, toPrivateLessonsError } from '../core/errors.js';
+import { lessonOwedCents, normalizeBalance, platformFeeCents } from '../core/fees.js';
 import { preflightLesson } from '../core/preflight.js';
 import { formatPacific, TENANT_TIMEZONE } from '../core/time.js';
 
@@ -364,6 +365,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
         });
         return {
           ...quote,
+          platform_fee_cents: platformFeeCents(quote),
           scheduled_at_pacific: formatPacific(quote.scheduled_at),
           quoted_at_pacific: formatPacific(quote.quoted_at),
           reminder:
@@ -457,7 +459,7 @@ export function buildServer(options: BuildServerOptions): McpServer {
           coach_id === undefined ? balances : balances.filter((b) => b.coach_id === coach_id);
         return {
           count: filtered.length,
-          balances: filtered,
+          balances: filtered.map(normalizeBalance),
           meaning:
             'unpaid_total_cents is what the coach owes the gym: unpaid_cents (facility fees) + ' +
             'unpaid_platform_fee_cents (the $1-per-lesson platform fee).',
@@ -957,10 +959,9 @@ export function buildServer(options: BuildServerOptions): McpServer {
             dry_run: true,
             lesson: decorateLesson(current.lesson),
             when_pacific: formatPacific(current.lesson.scheduled_at),
-            amount_owed_cents:
-              current.lesson.effective_cost_cents + current.lesson.platform_fee_cents,
+            amount_owed_cents: lessonOwedCents(current.lesson),
             facility_fee_cents: current.lesson.effective_cost_cents,
-            platform_fee_cents: current.lesson.platform_fee_cents,
+            platform_fee_cents: platformFeeCents(current.lesson),
             already_paid: current.lesson.paid_at != null,
             already_paid_at_pacific: current.lesson.paid_at
               ? formatPacific(current.lesson.paid_at)
