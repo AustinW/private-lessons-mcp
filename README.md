@@ -340,6 +340,13 @@ amount, and never sends one. `private-lessons lessons create --dry-run` and
 `private_lessons_get_quote` return the server's **advisory** quote; the fee is recalculated at
 create time, and there is no quote token to expire.
 
+Each lesson also carries a **platform fee** (`platform_fee_cents`, $1 per lesson) the coach
+owes the gym on top of the facility fee. The facility fee stays in `cost_cents` /
+`effective_cost_cents`; what the coach owes for a lesson is `effective_cost_cents +
+platform_fee_cents`. Balances add `unpaid_platform_fee_cents` and `unpaid_total_cents`
+(`unpaid_cents` + `unpaid_platform_fee_cents`), and the CLI and MCP mark-paid amount is that
+total.
+
 ---
 
 ## Exit codes

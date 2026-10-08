@@ -134,8 +134,9 @@ const dryRunSchema = z
   .optional()
   .default(false)
   .describe(
-    'When true, WRITES NOTHING. Returns the advisory server-computed quote plus an ' +
-      'availability/conflict preview so you can confirm with the user before committing.',
+    'When true, WRITES NOTHING. Returns the advisory server-computed quote (facility fee ' +
+      'in cost_cents, plus platform_fee_cents on top) and an availability/conflict preview ' +
+      'so you can confirm with the user before committing.',
   );
 
 const idempotencyKeySchema = z
@@ -340,11 +341,13 @@ export function buildServer(options: BuildServerOptions): McpServer {
       title: 'Get an advisory facility-fee quote',
       description:
         'READ-ONLY, no side effects. Returns the server-computed facility fee for a ' +
-        'prospective lesson, plus the membership determination and whether it counts as a ' +
-        'late booking. THE QUOTE IS ADVISORY: membership can change and the late-booking ' +
-        'flag flips once the scheduled time passes, so the fee is always recalculated at ' +
-        'create time. Never quote a price to a user as final, and never compute a fee ' +
-        'yourself — the server owns pricing. Requires lessons:read.',
+        'prospective lesson (cost_cents), plus the membership determination and whether it ' +
+        'counts as a late booking. The platform fee (platform_fee_cents, $1 per lesson) is ' +
+        'added on top of cost_cents; the coach owes both. THE QUOTE IS ADVISORY: ' +
+        'membership can change and the late-booking flag flips once the scheduled time ' +
+        'passes, so the fee is always recalculated at create time. Never quote a price to ' +
+        'a user as final, and never compute a fee yourself — the server owns pricing. ' +
+        'Requires lessons:read.',
       annotations: { readOnlyHint: true, openWorldHint: true },
       inputSchema: {
         athlete_ids: athleteIdsSchema,
@@ -365,7 +368,8 @@ export function buildServer(options: BuildServerOptions): McpServer {
           quoted_at_pacific: formatPacific(quote.quoted_at),
           reminder:
             'Advisory only. The facility fee is recalculated server-side when the lesson ' +
-            'is actually created.',
+            'is actually created. The platform fee (platform_fee_cents) is added on top of ' +
+            'cost_cents.',
         };
       }),
   );
@@ -430,11 +434,12 @@ export function buildServer(options: BuildServerOptions): McpServer {
   server.registerTool(
     'private_lessons_get_balance',
     {
-      title: 'Get unpaid facility-fee balances',
+      title: 'Get unpaid facility and platform fee balances',
       description:
-        'READ-ONLY. Returns per-coach unpaid facility fees the COACH OWES THE GYM — not ' +
-        'money families owe the coach. Coach/Staff tokens see their own balance; ' +
-        'Admin/Management see all. Requires balances:read.',
+        'READ-ONLY. Returns per-coach unpaid facility fees plus platform fees the COACH ' +
+        'OWES THE GYM — not money families owe the coach. unpaid_total_cents is the amount ' +
+        'owed (unpaid_cents + unpaid_platform_fee_cents). Coach/Staff tokens see their own ' +
+        'balance; Admin/Management see all. Requires balances:read.',
       annotations: { readOnlyHint: true, openWorldHint: true },
       inputSchema: {
         coach_id: z
@@ -453,7 +458,9 @@ export function buildServer(options: BuildServerOptions): McpServer {
         return {
           count: filtered.length,
           balances: filtered,
-          meaning: 'unpaid_cents is what the coach owes the gym in facility fees.',
+          meaning:
+            'unpaid_total_cents is what the coach owes the gym: unpaid_cents (facility fees) + ' +
+            'unpaid_platform_fee_cents (the $1-per-lesson platform fee).',
         };
       }),
   );
@@ -590,8 +597,9 @@ export function buildServer(options: BuildServerOptions): McpServer {
     {
       title: 'Book a private lesson',
       description:
-        'WRITE — SIDE EFFECTS: books a lesson, charges the coach a facility fee, writes ' +
-        'an audit event, and sends Slack/email notifications. Not silent, not free.\n\n' +
+        'WRITE — SIDE EFFECTS: books a lesson, charges the coach a facility fee plus the ' +
+        '$1 platform fee, writes an audit event, and sends Slack/email notifications. Not ' +
+        'silent, not free.\n\n' +
         'RUN WITH dry_run: true FIRST and show the user the advisory quote and the Pacific ' +
         'start time before committing.\n\n' +
         'ATHLETES: `athlete_ids` only. There is no name field. Resolve every name through ' +
@@ -602,7 +610,8 @@ export function buildServer(options: BuildServerOptions): McpServer {
         'booking is late, `late_booking_acknowledged` must also be true (else 422 ' +
         'LATE_BOOKING_ACK_REQUIRED); the dry run tells you whether it is late.\n\n' +
         'PRICING: never compute or hardcode a fee. The server calculates it at create time ' +
-        'and any earlier quote is advisory.\n\n' +
+        'and any earlier quote is advisory. The quote\'s platform_fee_cents is added on top ' +
+        'of its cost_cents (the facility fee); the coach owes both.\n\n' +
         'An Idempotency-Key is required by the API and generated automatically, so a retry ' +
         'after a dropped response replays instead of double-booking. Requires lessons:write.',
       annotations: {
@@ -910,11 +919,11 @@ export function buildServer(options: BuildServerOptions): McpServer {
   server.registerTool(
     'private_lessons_mark_lesson_paid',
     {
-      title: 'Mark a lesson\'s facility fee as paid',
+      title: 'Mark a lesson\'s fees as paid',
       description:
         'WRITE — FINANCIAL SIDE EFFECT: records that the coach has paid the facility fee ' +
-        'for this lesson. It changes the coach\'s balance and writes an audit event. There ' +
-        'is no un-mark-paid endpoint in this API.\n\n' +
+        'and platform fee for this lesson. It changes the coach\'s balance and writes an ' +
+        'audit event. There is no un-mark-paid endpoint in this API.\n\n' +
         'ALWAYS run with dry_run: true first, show the user the lesson\'s Pacific date/time ' +
         'and the exact amount, and get explicit confirmation before recording payment.\n\n' +
         'CONCURRENCY: `if_match` is required. Note that re-marking an ALREADY-PAID lesson ' +
@@ -948,7 +957,10 @@ export function buildServer(options: BuildServerOptions): McpServer {
             dry_run: true,
             lesson: decorateLesson(current.lesson),
             when_pacific: formatPacific(current.lesson.scheduled_at),
-            amount_owed_cents: current.lesson.effective_cost_cents,
+            amount_owed_cents:
+              current.lesson.effective_cost_cents + current.lesson.platform_fee_cents,
+            facility_fee_cents: current.lesson.effective_cost_cents,
+            platform_fee_cents: current.lesson.platform_fee_cents,
             already_paid: current.lesson.paid_at != null,
             already_paid_at_pacific: current.lesson.paid_at
               ? formatPacific(current.lesson.paid_at)

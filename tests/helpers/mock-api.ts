@@ -160,6 +160,7 @@ export function makeLesson(overrides: Partial<Lesson> = {}): Lesson {
     notes: null,
     cost_cents: 2000,
     effective_cost_cents: 2000,
+    platform_fee_cents: 100,
     cost_override_cents: null,
     cost_override_reason: null,
     late_fee_waived: false,

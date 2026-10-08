@@ -870,8 +870,8 @@ paths:
       tags: [Pricing]
       summary: Get an advisory facility-fee quote.
       description: |
-        Returns a server-computed facility fee for a prospective lesson: `cost_cents`,
-        membership determination (all-athletes-enrolled rule), `is_late_booking`, and a
+        Returns a server-computed facility fee for a prospective lesson: `cost_cents`
+        (plus `platform_fee_cents`, added on top), membership determination (all-athletes-enrolled rule), `is_late_booking`, and a
         human-readable breakdown. Read-only, no side effects. Requires scope `lessons:read`.
 
         **Advisory, not binding.** A quote is not deterministic over time (membership can
@@ -952,10 +952,11 @@ paths:
     get:
       operationId: listBalances
       tags: [Balances]
-      summary: Per-coach unpaid facility fees owed to the gym.
+      summary: Per-coach unpaid facility and platform fees owed to the gym.
       description: |
-        Returns per-coach **unpaid facility fees that the coach owes the gym** — money the
-        coach owes the gym, **not** money families owe the coach. Requires scope
+        Returns per-coach **unpaid facility and platform fees that the coach owes the gym** —
+        money the coach owes the gym, **not** money families owe the coach. `unpaid_total_cents`
+        is the amount owed (`unpaid_cents` facility fees + `unpaid_platform_fee_cents`). Requires scope
         `balances:read`. Coach/Staff see their own balance; Admin/Management see all.
 
         Amounts are computed from `effectiveCostCents()` (honouring `cost_override_cents`
@@ -1228,6 +1229,7 @@ components:
           notes: Working bar routine.
           cost_cents: 1000
           effective_cost_cents: 1000
+          platform_fee_cents: 100
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1260,6 +1262,7 @@ components:
             notes: Working bar routine.
             cost_cents: 1000
             effective_cost_cents: 1000
+            platform_fee_cents: 100
             cost_override_cents: null
             cost_override_reason: null
             late_fee_waived: false
@@ -1284,6 +1287,7 @@ components:
             notes: null
             cost_cents: 3000
             effective_cost_cents: 3000
+            platform_fee_cents: 100
             cost_override_cents: null
             cost_override_reason: null
             late_fee_waived: false
@@ -1330,6 +1334,7 @@ components:
           notes: Working bar routine.
           cost_cents: 1000
           effective_cost_cents: 1000
+          platform_fee_cents: 100
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1363,6 +1368,7 @@ components:
           notes: null
           cost_cents: 1000
           effective_cost_cents: 1000
+          platform_fee_cents: 100
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1395,6 +1401,7 @@ components:
           notes: Working bar routine.
           cost_cents: 1000
           effective_cost_cents: 1000
+          platform_fee_cents: 100
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1427,6 +1434,7 @@ components:
           notes: Working bar routine.
           cost_cents: 1000
           effective_cost_cents: 1000
+          platform_fee_cents: 100
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1515,6 +1523,7 @@ components:
           is_member: true
           is_late_booking: false
           cost_cents: 1000
+          platform_fee_cents: 100
           currency: USD
           hourly_rate_cents: 1000
           late_multiplier_applied: false
@@ -1522,17 +1531,21 @@ components:
           quoted_at: '2026-07-28T09:29:55-07:00'
           advisory: true
     BalanceList:
-      summary: What two coaches owe the gym in unpaid facility fees.
+      summary: What two coaches owe the gym in unpaid facility and platform fees.
       value:
         data:
           - coach_id: 7
             coach_name: Dana Smith
             unpaid_cents: 4500
+            unpaid_platform_fee_cents: 300
+            unpaid_total_cents: 4800
             currency: USD
             unpaid_lesson_count: 3
           - coach_id: 9
             coach_name: Jordan Lee
             unpaid_cents: 0
+            unpaid_platform_fee_cents: 0
+            unpaid_total_cents: 0
             currency: USD
             unpaid_lesson_count: 0
     AuditEventPage:
@@ -2156,6 +2169,7 @@ components:
         - is_late_booking
         - cost_cents
         - effective_cost_cents
+        - platform_fee_cents
         - late_fee_waived
         - version
         - created_at
@@ -2204,9 +2218,16 @@ components:
         effective_cost_cents:
           type: integer
           description: >-
-            The authoritative amount owed, via `effectiveCostCents()` (honours
-            `cost_override_cents` and `late_fee_waived`). Balances aggregate this, never
-            `cost_cents`.
+            The authoritative facility fee owed, via `effectiveCostCents()` (honours
+            `cost_override_cents` and `late_fee_waived`). Facility-only: the coach owes
+            this plus `platform_fee_cents`. Balances aggregate this, never `cost_cents`.
+        platform_fee_cents:
+          type: integer
+          minimum: 0
+          description: >-
+            The platform fee in cents the coach owes the gym on top of the facility fee
+            (flat $1 per lesson). What the coach owes for the lesson is
+            `effective_cost_cents + platform_fee_cents`.
         cost_override_cents:
           type:
             - integer
@@ -2313,6 +2334,7 @@ components:
         - is_member
         - is_late_booking
         - cost_cents
+        - platform_fee_cents
         - currency
         - hourly_rate_cents
         - late_multiplier_applied
@@ -2335,7 +2357,13 @@ components:
           type: boolean
         cost_cents:
           type: integer
-          description: Computed facility fee in cents.
+          description: Computed facility fee in cents (excludes the platform fee).
+        platform_fee_cents:
+          type: integer
+          minimum: 0
+          description: >-
+            Platform fee in cents, added on top of `cost_cents` (flat $1 per lesson). The
+            coach owes `cost_cents + platform_fee_cents`.
         currency:
           type: string
           const: USD
@@ -2412,9 +2440,10 @@ components:
     Balance:
       type: object
       description: >-
-        Unpaid facility fees a coach owes the gym (computed from `effectiveCostCents()`).
-        This is money the coach owes the gym, NOT money families owe the coach.
-      required: [coach_id, unpaid_cents, currency, unpaid_lesson_count]
+        Unpaid facility and platform fees a coach owes the gym (facility fees computed from
+        `effectiveCostCents()`). This is money the coach owes the gym, NOT money families
+        owe the coach.
+      required: [coach_id, unpaid_cents, unpaid_platform_fee_cents, unpaid_total_cents, currency, unpaid_lesson_count]
       properties:
         coach_id:
           type: integer
@@ -2424,7 +2453,16 @@ components:
             - 'null'
         unpaid_cents:
           type: integer
-          description: Sum of `effective_cost_cents` over the coach's unpaid lessons.
+          description: >-
+            Sum of `effective_cost_cents` over the coach's unpaid lessons. Facility fees
+            only; excludes the platform fee.
+        unpaid_platform_fee_cents:
+          type: integer
+          description: Sum of `platform_fee_cents` over the coach's unpaid lessons.
+        unpaid_total_cents:
+          type: integer
+          description: >-
+            What the coach owes the gym: `unpaid_cents + unpaid_platform_fee_cents`.
         currency:
           type: string
           const: USD

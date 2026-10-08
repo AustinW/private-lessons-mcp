@@ -71,6 +71,15 @@ beforeAll(async () => {
       });
       return;
     }
+    if (path === '/lessons/43' && req.method === 'GET') {
+      // A lesson with no platform fee: the CLI shows the single facility amount.
+      send(
+        200,
+        { data: makeLesson({ id: 43, platform_fee_cents: 0 }) },
+        { etag: '"lesson-43-v3"' },
+      );
+      return;
+    }
     if (path === '/lessons' && req.method === 'GET') {
       send(200, { data: [makeLesson()] });
       return;
@@ -92,6 +101,22 @@ beforeAll(async () => {
       return;
     }
     if (path === '/balances' && req.method === 'GET') {
+      if (String(req.headers.authorization).includes('balances-ok')) {
+        send(200, {
+          data: [
+            {
+              coach_id: 7,
+              coach_name: 'Dana Smith',
+              unpaid_cents: 6000,
+              unpaid_platform_fee_cents: 300,
+              unpaid_total_cents: 6300,
+              currency: 'USD',
+              unpaid_lesson_count: 3,
+            },
+          ],
+        });
+        return;
+      }
       send(403, {
         type: 'https://private-lessons.scorsync.com/errors/insufficient-scope',
         title: 'Insufficient scope',
@@ -313,8 +338,25 @@ describe('destructive actions require an explicit confirmation', () => {
 
   it('prints the amount before asking to mark paid', async () => {
     const result = await run(['lessons', 'mark-paid', '42']);
-    expect(result.stderr).toContain('$20.00');
+    expect(result.stderr).toContain('$21.00 ($20.00 facility + $1.00 platform)');
     expect(result.stderr).toContain('no un-mark-paid endpoint');
+  });
+
+  it('keeps the single amount when the lesson has no platform fee', async () => {
+    const result = await run(['lessons', 'mark-paid', '43']);
+    expect(result.stderr).toContain('amount    $20.00');
+    expect(result.stderr).not.toContain('platform');
+  });
+
+  it('puts the total and the breakdown in the mark-paid dry run', async () => {
+    const result = await run(['--json', 'lessons', 'mark-paid', '42', '--dry-run']);
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(parsed).toMatchObject({
+      amount_cents: 2100,
+      facility_fee_cents: 2000,
+      platform_fee_cents: 100,
+    });
   });
 
   it('proceeds with --yes, sending both If-Match and a generated Idempotency-Key', async () => {
@@ -390,5 +432,36 @@ describe('lessons list', () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('America/Los_Angeles');
     expect(result.stdout).toContain('Aug 4, 2026');
+  });
+
+  it('shows the total owed (facility + platform) in the fee column', async () => {
+    const result = await run(['lessons', 'list']);
+    expect(result.stdout).toContain('21.00');
+  });
+});
+
+describe('lessons get', () => {
+  it('shows the total owed in the fee column', async () => {
+    const result = await run(['lessons', 'get', '42']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('21.00');
+  });
+
+  it('shows the facility fee alone when the platform fee is 0', async () => {
+    const result = await run(['lessons', 'get', '43']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('20.00');
+    expect(result.stdout).not.toContain('21.00');
+  });
+});
+
+describe('balance', () => {
+  it('shows facility, platform, and total columns', async () => {
+    const result = await run(['balance'], { PRIVATE_LESSONS_TOKEN: 'balances-ok-token' });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('FACILITY $');
+    expect(result.stdout).toContain('PLATFORM $');
+    expect(result.stdout).toContain('TOTAL');
+    expect(result.stdout).toMatch(/Dana Smith\s+60\.00\s+3\.00\s+63\.00\s+3/);
   });
 });

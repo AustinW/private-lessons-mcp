@@ -108,6 +108,8 @@ export async function preflightLesson(
     notes: [
       'Dry run: nothing was written.',
       'The quote is advisory — the server recalculates the fee at create time.',
+      'The coach owes quote.cost_cents (facility fee) plus quote.platform_fee_cents ' +
+        '(platform fee, added on top).',
       'Availability is a preview; the authoritative conflict check runs inside the write.',
     ],
   };

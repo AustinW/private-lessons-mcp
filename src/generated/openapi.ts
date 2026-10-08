@@ -287,8 +287,8 @@ export interface paths {
         };
         /**
          * Get an advisory facility-fee quote.
-         * @description Returns a server-computed facility fee for a prospective lesson: `cost_cents`,
-         *     membership determination (all-athletes-enrolled rule), `is_late_booking`, and a
+         * @description Returns a server-computed facility fee for a prospective lesson: `cost_cents`
+         *     (plus `platform_fee_cents`, added on top), membership determination (all-athletes-enrolled rule), `is_late_booking`, and a
          *     human-readable breakdown. Read-only, no side effects. Requires scope `lessons:read`.
          *
          *     **Advisory, not binding.** A quote is not deterministic over time (membership can
@@ -314,9 +314,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Per-coach unpaid facility fees owed to the gym.
-         * @description Returns per-coach **unpaid facility fees that the coach owes the gym** — money the
-         *     coach owes the gym, **not** money families owe the coach. Requires scope
+         * Per-coach unpaid facility and platform fees owed to the gym.
+         * @description Returns per-coach **unpaid facility and platform fees that the coach owes the gym** —
+         *     money the coach owes the gym, **not** money families owe the coach. `unpaid_total_cents`
+         *     is the amount owed (`unpaid_cents` facility fees + `unpaid_platform_fee_cents`). Requires scope
          *     `balances:read`. Coach/Staff see their own balance; Admin/Management see all.
          *
          *     Amounts are computed from `effectiveCostCents()` (honouring `cost_override_cents`
@@ -497,8 +498,10 @@ export interface components {
             notes?: string | null;
             /** @description Raw stored facility fee in cents, before override/waiver. */
             cost_cents: number;
-            /** @description The authoritative amount owed, via `effectiveCostCents()` (honours `cost_override_cents` and `late_fee_waived`). Balances aggregate this, never `cost_cents`. */
+            /** @description The authoritative facility fee owed, via `effectiveCostCents()` (honours `cost_override_cents` and `late_fee_waived`). Facility-only: the coach owes this plus `platform_fee_cents`. Balances aggregate this, never `cost_cents`. */
             effective_cost_cents: number;
+            /** @description The platform fee in cents the coach owes the gym on top of the facility fee (flat $1 per lesson). What the coach owes for the lesson is `effective_cost_cents + platform_fee_cents`. */
+            platform_fee_cents: number;
             cost_override_cents?: number | null;
             cost_override_reason?: string | null;
             late_fee_waived: boolean;
@@ -550,8 +553,10 @@ export interface components {
             /** @description All-athletes-enrolled membership determination. */
             is_member: boolean;
             is_late_booking: boolean;
-            /** @description Computed facility fee in cents. */
+            /** @description Computed facility fee in cents (excludes the platform fee). */
             cost_cents: number;
+            /** @description Platform fee in cents, added on top of `cost_cents` (flat $1 per lesson). The coach owes `cost_cents + platform_fee_cents`. */
+            platform_fee_cents: number;
             /** @constant */
             currency: "USD";
             /** @description 1000 for members, 2000 for non-members. */
@@ -596,12 +601,16 @@ export interface components {
             /** @description True if starting a lesson at this slot counts as a late booking. */
             is_late_booking: boolean;
         };
-        /** @description Unpaid facility fees a coach owes the gym (computed from `effectiveCostCents()`). This is money the coach owes the gym, NOT money families owe the coach. */
+        /** @description Unpaid facility and platform fees a coach owes the gym (facility fees computed from `effectiveCostCents()`). This is money the coach owes the gym, NOT money families owe the coach. */
         Balance: {
             coach_id: number;
             coach_name?: string | null;
-            /** @description Sum of `effective_cost_cents` over the coach's unpaid lessons. */
+            /** @description Sum of `effective_cost_cents` over the coach's unpaid lessons. Facility fees only; excludes the platform fee. */
             unpaid_cents: number;
+            /** @description Sum of `platform_fee_cents` over the coach's unpaid lessons. */
+            unpaid_platform_fee_cents: number;
+            /** @description What the coach owes the gym: `unpaid_cents + unpaid_platform_fee_cents`. */
+            unpaid_total_cents: number;
             /** @constant */
             currency: "USD";
             unpaid_lesson_count: number;
