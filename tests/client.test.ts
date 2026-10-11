@@ -260,3 +260,29 @@ describe('audit pagination', () => {
     expect(api.requests[0]?.query.get('limit')).toBe('50');
   });
 });
+
+describe('pricing quote', () => {
+  const quoteApi = (): MockApi =>
+    new MockApi().on('GET /pricing-quotes', () => ({ body: { data: {} } }));
+
+  it('sends the coach as the `coach` query parameter', async () => {
+    const api = quoteApi();
+    await clientFor(api).getPricingQuote({
+      duration: 60,
+      athlete_ids: [13],
+      scheduled_at: '2026-10-06T14:00:00-07:00',
+      coach: 9,
+    });
+    expect(api.requests[0]?.query.get('coach')).toBe('9');
+  });
+
+  it('sends no `coach` when the caller gives none, so the API prices the token owner', async () => {
+    const api = quoteApi();
+    await clientFor(api).getPricingQuote({
+      duration: 60,
+      athlete_ids: [13],
+      scheduled_at: '2026-10-06T14:00:00-07:00',
+    });
+    expect(api.requests[0]?.query.has('coach')).toBe(false);
+  });
+});

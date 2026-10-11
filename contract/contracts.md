@@ -39,6 +39,7 @@ cannot diverge" is enforced.
 | Idempotency: concurrent duplicate while original is **in progress** | 409 | `IDEMPOTENCY_KEY_REUSED` | true | Same code, disambiguated by `retryable: true` + `Retry-After`. See §6. |
 | Token lacks the required ability/scope | 403 | `INSUFFICIENT_SCOPE` | false | Layer 1 of the permission intersection (§4). |
 | `PrivateLessonPolicy` / `AthletePolicy` denies | 403 | `FORBIDDEN` | false | Layer 2 of the permission intersection. |
+| The token's owner has not accepted the current Terms of Service (once the sign-off is mandatory) | 403 | `FORBIDDEN` | false | Every endpoint. Body carries `terms_url` (the web sign-off page) and `terms_version`. Reuses `FORBIDDEN` so the 14-code set is unchanged. |
 | Per-token throttle exceeded | 429 | `RATE_LIMITED` | true | `Retry-After` header. |
 | `FeeAcknowledgementRequiredException` — `fee_acknowledged` not `true` on `POST /lessons` | 422 | `FACILITY_FEE_ACK_REQUIRED` | false | Recorded in the audit event. |
 | `LateBookingAcknowledgementRequiredException` — late booking without `late_booking_acknowledged: true` | 422 | `LATE_BOOKING_ACK_REQUIRED` | false | Recorded in the audit event. Deliberate divergence from the web JS-only warning (§13.2). |
@@ -305,7 +306,7 @@ the next call; no token-invalidation sweep is needed.
 | `/athletes` | GET | `athletes:read` | Coach branch permitted (search). Field visibility per §5. |
 | `/athletes/{id}` | GET | `athletes:read` | Field visibility per §5. |
 | `/athletes` | POST | `athletes:create` | Coach branch permitted (create). |
-| `/pricing-quotes` | GET | `lessons:read` | Read-only, no side effects. |
+| `/pricing-quotes` | GET | `lessons:read` | Read-only, no side effects. `coach` defaults to the token owner; another coach is authorized as booking for them is (`BookingAuthorization`: the `manage-lessons` permission), checked before the coach's existence so a denied caller gets `403` for any id. Deliberately not `/availability`'s role-based `viewCoachSchedule`: the fee belongs to the booking. |
 | `/balances` | GET | `balances:read` | Coach/Staff → own balance; Admin/Management → all. |
 | `/audit-events` | GET | `audit:read` | **Admin-only policy** — a non-Admin token with `audit:read` still gets `403 FORBIDDEN`. |
 

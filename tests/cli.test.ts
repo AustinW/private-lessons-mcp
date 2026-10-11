@@ -109,6 +109,63 @@ beforeAll(async () => {
       );
       return;
     }
+    if (path === '/pricing-quotes' && req.method === 'GET') {
+      // Coach 9 does not coach classes, so the API doubles the fee; coach 7 pays the plain rate.
+      const surcharge = url.searchParams.get('coach') === '9';
+      const quote: Record<string, unknown> = {
+        duration_minutes: 60,
+        athlete_ids: [101],
+        scheduled_at: '2026-08-04T14:00:00-07:00',
+        coach_id: Number(url.searchParams.get('coach') ?? 7),
+        is_member: false,
+        is_late_booking: false,
+        cost_cents: surcharge ? 6000 : 3000,
+        platform_fee_cents: 100,
+        currency: 'USD',
+        hourly_rate_cents: 3000,
+        multiplier: surcharge ? 2 : 1,
+        late_multiplier_applied: false,
+        coach_surcharge_applied: surcharge,
+        coach_surcharge_reason: surcharge ? 'non_class_coach' : null,
+        breakdown: '60 minutes at $30.00/hour.',
+        quoted_at: '2026-07-21T10:00:00-07:00',
+        advisory: true,
+      };
+      if (oldApi) {
+        for (const key of [
+          'coach_id',
+          'multiplier',
+          'coach_surcharge_applied',
+          'coach_surcharge_reason',
+          'platform_fee_cents',
+        ]) {
+          delete quote[key];
+        }
+        quote.cost_cents = 3000;
+      }
+      send(200, { data: quote });
+      return;
+    }
+    if (path === '/availability' && req.method === 'GET') {
+      send(200, {
+        data: {
+          date: '2026-08-04',
+          coach_id: 7,
+          coach_name: 'Dana Smith',
+          duration_minutes: 60,
+          timezone: 'America/Los_Angeles',
+          business_hours: { start: '07:00', end: '22:00' },
+          slots: [
+            {
+              start: '2026-08-04T13:00:00-07:00',
+              end: '2026-08-04T17:00:00-07:00',
+              is_late_booking: false,
+            },
+          ],
+        },
+      });
+      return;
+    }
     if (path === '/balances' && req.method === 'GET') {
       if (oldApi) {
         send(200, {
@@ -535,6 +592,63 @@ describe('an API that does not send the platform-fee fields yet', () => {
       unpaid_cents: 6000,
       unpaid_platform_fee_cents: 0,
       unpaid_total_cents: 6000,
+    });
+  });
+});
+
+describe('lessons create --dry-run and the coach surcharge', () => {
+  const createDryRun = (coach: string): string[] => [
+    'lessons',
+    'create',
+    '--coach',
+    coach,
+    '--athlete-ids',
+    '101',
+    '--at',
+    '2026-08-04T14:00:00-07:00',
+    '--duration',
+    '60',
+    '--dry-run',
+  ];
+
+  it('quotes for the --coach given and shows why the surcharge applies', async () => {
+    const before = seen.length;
+    const result = await run(createDryRun('9'));
+    expect(result.code).toBe(0);
+    const quoteCall = seen.slice(before).find((r) => r.url.includes('/pricing-quotes'));
+    expect(quoteCall?.url).toContain('coach=9');
+    expect(result.stdout).toContain('$61.00 ($60.00 facility + $1.00 platform)');
+    expect(result.stdout).toContain(
+      'coach    2x surcharge: the coach does not regularly coach classes',
+    );
+  });
+
+  it('shows no surcharge line when none applies', async () => {
+    const result = await run(createDryRun('7'));
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('$31.00 ($30.00 facility + $1.00 platform)');
+    expect(result.stdout).not.toContain('surcharge');
+    expect(result.stderr).not.toContain('surcharge');
+  });
+
+  it('warns when an older API does not report the surcharge, without undefined or NaN', async () => {
+    const result = await run(createDryRun('9'), { PRIVATE_LESSONS_TOKEN: 'old-api-token' });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('fee      $30.00 (advisory)');
+    expect(result.stdout).not.toContain('coach    ');
+    expect(result.stderr).toContain('does not report the coach surcharge');
+    expect(result.stdout + result.stderr).not.toMatch(/undefined|NaN/);
+  });
+
+  it('carries the surcharge fields in --json', async () => {
+    const result = await run(['--json', ...createDryRun('9')]);
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { data: { quote: Record<string, unknown> } };
+    expect(parsed.data.quote).toMatchObject({
+      coach_id: 9,
+      multiplier: 2,
+      coach_surcharge_applied: true,
+      coach_surcharge_reason: 'non_class_coach',
     });
   });
 });

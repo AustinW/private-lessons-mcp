@@ -32,7 +32,13 @@ import {
 } from '../core/client.js';
 import { formatETag, parseETag } from '../core/concurrency.js';
 import { PrivateLessonsError, toPrivateLessonsError } from '../core/errors.js';
-import { lessonOwedCents, normalizeBalance, platformFeeCents } from '../core/fees.js';
+import {
+  COACH_SURCHARGE_UNKNOWN,
+  lessonOwedCents,
+  normalizeBalance,
+  normalizeQuote,
+  platformFeeCents,
+} from '../core/fees.js';
 import { preflightLesson } from '../core/preflight.js';
 import { formatPacific, TENANT_TIMEZONE } from '../core/time.js';
 
@@ -343,8 +349,13 @@ export function buildServer(options: BuildServerOptions): McpServer {
       description:
         'READ-ONLY, no side effects. Returns the server-computed facility fee for a ' +
         'prospective lesson (cost_cents), plus the membership determination and whether it ' +
-        'counts as a late booking. The platform fee (platform_fee_cents, $1 per lesson) is ' +
-        'added on top of cost_cents; the coach owes both. THE QUOTE IS ADVISORY: ' +
+        'counts as a late booking. cost_cents includes the COACH SURCHARGE: the fee is ' +
+        'multiplied (2x today) when the coach does not regularly coach classes, or on a ' +
+        'Saturday when the coach does not work Saturdays; coach_surcharge_applied and ' +
+        'coach_surcharge_reason say which. The surcharge follows the coach, so pass coach_id ' +
+        'when the lesson is for a coach other than the token owner. The platform fee ' +
+        '(platform_fee_cents, $1 per lesson) is added on top of cost_cents; the coach owes ' +
+        'both. THE QUOTE IS ADVISORY: ' +
         'membership can change and the late-booking flag flips once the scheduled time ' +
         'passes, so the fee is always recalculated at create time. Never quote a price to ' +
         'a user as final, and never compute a fee yourself — the server owns pricing. ' +
@@ -354,20 +365,32 @@ export function buildServer(options: BuildServerOptions): McpServer {
         athlete_ids: athleteIdsSchema,
         scheduled_at: rfc3339Schema,
         duration: durationSchema,
+        coach_id: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            'Coach user id to price for; the coach surcharge follows this coach. Defaults ' +
+              'to the token owner. Another coach needs the manage-lessons permission ' +
+              '(Admin, Management), else 403 FORBIDDEN.',
+          ),
       },
     },
-    async ({ athlete_ids, scheduled_at, duration }) =>
+    async ({ athlete_ids, scheduled_at, duration, coach_id }) =>
       run(async () => {
-        const quote = await client.getPricingQuote({
+        const query: Parameters<typeof client.getPricingQuote>[0] = {
           duration,
           athlete_ids,
           scheduled_at,
-        });
+        };
+        if (coach_id !== undefined) query.coach = coach_id;
+        const quote = normalizeQuote(await client.getPricingQuote(query));
         return {
           ...quote,
-          platform_fee_cents: platformFeeCents(quote),
           scheduled_at_pacific: formatPacific(quote.scheduled_at),
           quoted_at_pacific: formatPacific(quote.quoted_at),
+          warnings: quote.coach_surcharge_applied === null ? [COACH_SURCHARGE_UNKNOWN] : [],
           reminder:
             'Advisory only. The facility fee is recalculated server-side when the lesson ' +
             'is actually created. The platform fee (platform_fee_cents) is added on top of ' +

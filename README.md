@@ -171,7 +171,7 @@ protocol frames.
 | `private_lessons_list_lessons` | read | Scoped by the token's visibility. Reconcile filters: `external_id` + `external_provider` + `external_calendar_id`. |
 | `private_lessons_get_lesson` | read | Returns the strong ETag to use as `if_match`. |
 | `private_lessons_check_availability` | read | Bookable windows for a coach on one Pacific date. |
-| `private_lessons_get_quote` | read | Advisory server-computed fee. |
+| `private_lessons_get_quote` | read | Advisory server-computed fee, coach surcharge included. Optional `coach_id`. |
 | `private_lessons_search_athletes` | read | Step 1 of the two-step write flow. |
 | `private_lessons_create_athlete` | **write** | dry-run, auto `Idempotency-Key`. |
 | `private_lessons_create_lesson` | **write** | dry-run, auto `Idempotency-Key`. Optional `external_ref`. |
@@ -346,6 +346,15 @@ owes the gym on top of the facility fee. The facility fee stays in `cost_cents` 
 platform_fee_cents`. Balances add `unpaid_platform_fee_cents` and `unpaid_total_cents`
 (`unpaid_cents` + `unpaid_platform_fee_cents`), and the CLI and MCP mark-paid amount is that
 total.
+
+The quote includes the **coach surcharge**: the facility fee is multiplied (2x today) when the
+coach does not regularly coach classes, or on a Saturday when the coach does not work
+Saturdays. The surcharge follows the coach, so the quote is priced for a coach:
+`private_lessons_get_quote` takes an optional `coach_id` (default: the token owner; another
+coach needs the `manage-lessons` permission), and the create/update dry runs always price the
+lesson's coach. `coach_surcharge_applied` and `coach_surcharge_reason` (`non_class_coach` |
+`saturday`) say whether and why; the CLI dry run prints the reason. An API too old to send these
+fields gives `null` for each and a warning that the quoted fee may be too low.
 
 ---
 
