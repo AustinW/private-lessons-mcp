@@ -96,9 +96,9 @@ tags:
   - name: Athletes
     description: Athlete search, lookup, and creation.
   - name: Pricing
-    description: Advisory facility-fee quotes.
+    description: Advisory fee quotes (facility fee and platform fee).
   - name: Balances
-    description: Per-coach unpaid facility fees owed to the gym.
+    description: Per-coach unpaid facility and platform fees owed to the gym.
   - name: Audit
     description: Append-only audit log (Admin only).
 
@@ -558,7 +558,7 @@ paths:
       tags: [Lessons]
       summary: Mark a lesson as paid.
       description: |
-        Records payment of the facility fee for a lesson. Requires scope
+        Marks a lesson as paid, settling both its facility fee and its platform fee. Requires scope
         `lessons:mark-paid`.
 
         **Optimistic concurrency:** `If-Match` is **required** (absent -> `422`
@@ -868,11 +868,25 @@ paths:
     get:
       operationId: getPricingQuote
       tags: [Pricing]
-      summary: Get an advisory facility-fee quote.
+      summary: Get an advisory fee quote.
       description: |
-        Returns a server-computed facility fee for a prospective lesson: `cost_cents`
-        (plus `platform_fee_cents`, added on top), membership determination (all-athletes-enrolled rule), `is_late_booking`, and a
-        human-readable breakdown. Read-only, no side effects. Requires scope `lessons:read`.
+        Returns server-computed fees for a prospective lesson: `cost_cents` (the facility
+        fee), `platform_fee_cents` (the per-lesson platform fee), membership determination
+        (all-athletes-enrolled rule), `is_late_booking`, and a human-readable breakdown. The
+        coach would owe `cost_cents + platform_fee_cents`; `platform_fee_cents` is `0` for a
+        lesson scheduled before billing starts (2026-10-01, tenant time). Read-only, no side
+        effects. Requires scope `lessons:read`.
+
+        **Priced for a coach.** `cost_cents` includes the coach surcharge, exactly as
+        `POST /lessons` stores it: the fee is multiplied when the coach does not regularly
+        coach classes, or on a Saturday (tenant time) when the coach does not regularly work
+        Saturdays. The surcharge follows the coach's settings, so the quote is for `coach`,
+        which defaults to the token owner. Quoting for another coach is authorized exactly
+        as booking for them is: the token owner must hold the `manage-lessons` permission
+        (Admin, Management), else `403 FORBIDDEN` — for any other id, existing or not. For a
+        caller who may, an unknown or removed coach is `422 VALIDATION_FAILED`. Surcharges
+        never stack: a late booking with a coach surcharge is multiplied once
+        (`multiplier`).
 
         **Advisory, not binding.** A quote is not deterministic over time (membership can
         change; `is_late_booking` flips once the scheduled time passes), so the response
@@ -893,7 +907,9 @@ paths:
               --data-urlencode 'duration=60' \
               --data-urlencode 'athlete_ids=12' \
               --data-urlencode 'athlete_ids=13' \
-              --data-urlencode 'scheduled_at=2026-08-04T14:00:00-07:00'
+              --data-urlencode 'scheduled_at=2026-10-06T14:00:00-07:00'
+            # Admin/Management only: quote another coach's fee.
+            #   --data-urlencode 'coach=7'
       parameters:
         - $ref: '#/components/parameters/XRequestIdRequest'
         - name: duration
@@ -922,6 +938,17 @@ paths:
             naive/offset-less input is rejected with 422 VALIDATION_FAILED.
           schema:
             $ref: '#/components/schemas/Rfc3339DateTime'
+        - name: coach
+          in: query
+          required: false
+          description: >-
+            Coach (staff) user id whose fee to quote; the coach surcharge follows this
+            coach's settings. Defaults to the token owner. Another coach requires the
+            `manage-lessons` permission (403 FORBIDDEN otherwise); an unknown or removed
+            coach is 422 VALIDATION_FAILED.
+          schema:
+            type: integer
+          example: 7
       responses:
         '200':
           description: An advisory pricing quote.
@@ -939,6 +966,8 @@ paths:
               examples:
                 quote:
                   $ref: '#/components/examples/PricingQuoteExample'
+                coach_surcharge:
+                  $ref: '#/components/examples/PricingQuoteCoachSurchargeExample'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
@@ -954,13 +983,18 @@ paths:
       tags: [Balances]
       summary: Per-coach unpaid facility and platform fees owed to the gym.
       description: |
-        Returns per-coach **unpaid facility and platform fees that the coach owes the gym** —
-        money the coach owes the gym, **not** money families owe the coach. `unpaid_total_cents`
-        is the amount owed (`unpaid_cents` facility fees + `unpaid_platform_fee_cents`). Requires scope
-        `balances:read`. Coach/Staff see their own balance; Admin/Management see all.
+        Returns per-coach **unpaid fees that the coach owes the gym** — money the coach owes
+        the gym, **not** money families owe the coach. Requires scope `balances:read`.
+        Coach/Staff see their own balance; Admin/Management see all.
 
-        Amounts are computed from `effectiveCostCents()` (honouring `cost_override_cents`
-        and `late_fee_waived`), never raw `cost_cents`.
+        Each balance splits what is owed. `unpaid_cents` is the unpaid **facility fees**,
+        `unpaid_platform_fee_cents` is the unpaid **platform fees**, and `unpaid_total_cents`
+        is their sum: the amount the coach owes the gym. A coach with nothing owed gets an
+        explicit row with all three at `0`.
+
+        Facility amounts are computed from `effectiveCostCents()` (honouring
+        `cost_override_cents` and `late_fee_waived`), never raw `cost_cents`. Platform
+        amounts are the sum of each lesson's stored `platform_fee_cents`.
       x-required-scopes: [balances:read]
       x-codeSamples:
         - lang: curl
@@ -1229,7 +1263,7 @@ components:
           notes: Working bar routine.
           cost_cents: 1000
           effective_cost_cents: 1000
-          platform_fee_cents: 100
+          platform_fee_cents: 0
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1262,7 +1296,7 @@ components:
             notes: Working bar routine.
             cost_cents: 1000
             effective_cost_cents: 1000
-            platform_fee_cents: 100
+            platform_fee_cents: 0
             cost_override_cents: null
             cost_override_reason: null
             late_fee_waived: false
@@ -1287,7 +1321,7 @@ components:
             notes: null
             cost_cents: 3000
             effective_cost_cents: 3000
-            platform_fee_cents: 100
+            platform_fee_cents: 0
             cost_override_cents: null
             cost_override_reason: null
             late_fee_waived: false
@@ -1334,7 +1368,7 @@ components:
           notes: Working bar routine.
           cost_cents: 1000
           effective_cost_cents: 1000
-          platform_fee_cents: 100
+          platform_fee_cents: 0
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1368,7 +1402,7 @@ components:
           notes: null
           cost_cents: 1000
           effective_cost_cents: 1000
-          platform_fee_cents: 100
+          platform_fee_cents: 0
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1401,7 +1435,7 @@ components:
           notes: Working bar routine.
           cost_cents: 1000
           effective_cost_cents: 1000
-          platform_fee_cents: 100
+          platform_fee_cents: 0
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1434,7 +1468,7 @@ components:
           notes: Working bar routine.
           cost_cents: 1000
           effective_cost_cents: 1000
-          platform_fee_cents: 100
+          platform_fee_cents: 0
           cost_override_cents: null
           cost_override_reason: null
           late_fee_waived: false
@@ -1514,21 +1548,55 @@ components:
           waiver_signed: false
           membership_status: member
     PricingQuoteExample:
-      summary: Advisory quote for a 60-minute member lesson.
+      summary: Advisory quote for a 60-minute member lesson ($10.00 facility fee plus $1.00 platform fee).
       value:
         data:
           duration_minutes: 60
           athlete_ids: [12]
-          scheduled_at: '2026-08-04T14:00:00-07:00'
+          scheduled_at: '2026-10-06T14:00:00-07:00'
+          coach_id: 7
           is_member: true
           is_late_booking: false
           cost_cents: 1000
           platform_fee_cents: 100
           currency: USD
           hourly_rate_cents: 1000
+          multiplier: 1
           late_multiplier_applied: false
-          breakdown: 60 minutes at the member rate of $10.00/hour = $10.00.
-          quoted_at: '2026-07-28T09:29:55-07:00'
+          coach_surcharge_applied: false
+          coach_surcharge_reason: null
+          breakdown: >-
+            60 minutes at $10.00/hour (member rate, all athletes enrolled: yes) = $10.00.
+            Advisory only — the facility fee is recalculated when the lesson is created.
+            Plus the $1.00 platform fee.
+          quoted_at: '2026-09-29T09:29:55-07:00'
+          advisory: true
+    PricingQuoteCoachSurchargeExample:
+      summary: >-
+        A 60-minute non-member lesson for a coach who does not regularly coach classes
+        ($30.00 x2 = $60.00 facility fee plus $1.00 platform fee).
+      value:
+        data:
+          duration_minutes: 60
+          athlete_ids: [13]
+          scheduled_at: '2026-10-06T14:00:00-07:00'
+          coach_id: 9
+          is_member: false
+          is_late_booking: false
+          cost_cents: 6000
+          platform_fee_cents: 100
+          currency: USD
+          hourly_rate_cents: 3000
+          multiplier: 2
+          late_multiplier_applied: false
+          coach_surcharge_applied: true
+          coach_surcharge_reason: non_class_coach
+          breakdown: >-
+            60 minutes at $30.00/hour (non-member rate, all athletes enrolled: no) = $30.00;
+            coach surcharge (the coach does not regularly coach classes) x2 = $60.00.
+            Advisory only — the facility fee is recalculated when the lesson is created.
+            Plus the $1.00 platform fee.
+          quoted_at: '2026-09-29T09:29:55-07:00'
           advisory: true
     BalanceList:
       summary: What two coaches owe the gym in unpaid facility and platform fees.
@@ -2053,6 +2121,17 @@ components:
             - integer
             - 'null'
           description: On VERSION_MISMATCH (412), the lesson's current version.
+        terms_url:
+          type: string
+          format: uri
+          description: >-
+            On a 403 FORBIDDEN because the token's owner has not accepted the current Terms of
+            Service: the web page where they sign off. Retrying succeeds once they have.
+        terms_version:
+          type: string
+          description: With `terms_url`, the Terms of Service version awaiting acceptance.
+          examples:
+            - '2026-10-01'
 
     SlotConflictProblem:
       description: >-
@@ -2218,16 +2297,20 @@ components:
         effective_cost_cents:
           type: integer
           description: >-
-            The authoritative facility fee owed, via `effectiveCostCents()` (honours
-            `cost_override_cents` and `late_fee_waived`). Facility-only: the coach owes
-            this plus `platform_fee_cents`. Balances aggregate this, never `cost_cents`.
+            The facility fee after `cost_override_cents` and `late_fee_waived`, via
+            `effectiveCostCents()`. Balances aggregate this, never `cost_cents`. This is
+            not the whole amount owed: the coach owes `effective_cost_cents +
+            platform_fee_cents`.
         platform_fee_cents:
           type: integer
           minimum: 0
           description: >-
-            The platform fee in cents the coach owes the gym on top of the facility fee
-            (flat $1 per lesson). What the coach owes for the lesson is
-            `effective_cost_cents + platform_fee_cents`.
+            The per-lesson platform fee in cents that the coach owes the gym on top of the
+            facility fee. Stored when the lesson is booked or rescheduled: `0` for a lesson
+            scheduled before billing starts (2026-10-01, tenant time), the platform rate
+            from then on. Overrides and waivers do not change it. Exception: a lesson
+            already on the gym's platform invoice keeps its fee when it is moved before
+            2026-10-01, because the gym has already been billed for it.
         cost_override_cents:
           type:
             - integer
@@ -2326,18 +2409,22 @@ components:
 
     PricingQuote:
       type: object
-      description: Advisory facility-fee quote. Never binding; recalculated at create time.
+      description: Advisory fee quote (facility fee and platform fee). Never binding; recalculated at create time.
       required:
         - duration_minutes
         - athlete_ids
         - scheduled_at
+        - coach_id
         - is_member
         - is_late_booking
         - cost_cents
         - platform_fee_cents
         - currency
         - hourly_rate_cents
+        - multiplier
         - late_multiplier_applied
+        - coach_surcharge_applied
+        - coach_surcharge_reason
         - breakdown
         - quoted_at
         - advisory
@@ -2350,6 +2437,11 @@ components:
             type: integer
         scheduled_at:
           $ref: '#/components/schemas/Rfc3339DateTime'
+        coach_id:
+          type: integer
+          description: >-
+            The coach the quote is priced for: the `coach` parameter, or the token owner
+            when it was omitted.
         is_member:
           type: boolean
           description: All-athletes-enrolled membership determination.
@@ -2357,22 +2449,51 @@ components:
           type: boolean
         cost_cents:
           type: integer
-          description: Computed facility fee in cents (excludes the platform fee).
+          minimum: 0
+          description: >-
+            Computed facility fee in cents, late and coach surcharges included. Equals
+            `floor(hourly_rate_cents * duration_minutes / 60) * multiplier`.
         platform_fee_cents:
           type: integer
           minimum: 0
           description: >-
-            Platform fee in cents, added on top of `cost_cents` (flat $1 per lesson). The
-            coach owes `cost_cents + platform_fee_cents`.
+            Per-lesson platform fee in cents, on top of `cost_cents`. `0` when the
+            prospective lesson is scheduled before billing starts (2026-10-01, tenant time).
+            The coach would owe `cost_cents + platform_fee_cents`.
         currency:
           type: string
           const: USD
         hourly_rate_cents:
           type: integer
-          description: 1000 for members, 2000 for non-members.
+          description: >-
+            The member or non-member hourly rate applied, in cents. The gym sets both
+            rates; do not hard-code them.
+        multiplier:
+          type: integer
+          minimum: 1
+          description: >-
+            Multiplier applied to the prorated rate: `1` with no surcharge, else the gym's
+            surcharge multiplier (2 today). Applied once: a late booking with a coach
+            surcharge is not multiplied twice.
         late_multiplier_applied:
           type: boolean
-          description: Whether the x2 late surcharge was applied.
+          description: >-
+            Whether the late-booking surcharge applies (the start time has passed). True
+            even when a coach surcharge also applies; the multiplier is applied once.
+        coach_surcharge_applied:
+          type: boolean
+          description: >-
+            Whether a coach surcharge applies: the coach does not regularly coach classes,
+            or this is a Saturday (tenant time) and the coach does not regularly work
+            Saturdays. The value `POST /lessons` would store.
+        coach_surcharge_reason:
+          type:
+            - string
+            - 'null'
+          enum: [non_class_coach, saturday, null]
+          description: >-
+            Why the coach surcharge applies, or `null` when it does not.
+            `non_class_coach` wins when both reasons hold.
         breakdown:
           type: string
           description: Human-readable explanation of the computed fee.
@@ -2440,10 +2561,16 @@ components:
     Balance:
       type: object
       description: >-
-        Unpaid facility and platform fees a coach owes the gym (facility fees computed from
-        `effectiveCostCents()`). This is money the coach owes the gym, NOT money families
-        owe the coach.
-      required: [coach_id, unpaid_cents, unpaid_platform_fee_cents, unpaid_total_cents, currency, unpaid_lesson_count]
+        Unpaid facility and platform fees a coach owes the gym. This is money the coach
+        owes the gym, NOT money families owe the coach. `unpaid_total_cents` is what the
+        coach owes: `unpaid_cents + unpaid_platform_fee_cents`.
+      required:
+        - coach_id
+        - unpaid_cents
+        - unpaid_platform_fee_cents
+        - unpaid_total_cents
+        - currency
+        - unpaid_lesson_count
       properties:
         coach_id:
           type: integer
@@ -2453,14 +2580,19 @@ components:
             - 'null'
         unpaid_cents:
           type: integer
+          minimum: 0
           description: >-
-            Sum of `effective_cost_cents` over the coach's unpaid lessons. Facility fees
-            only; excludes the platform fee.
+            Unpaid facility fees: the sum of `effective_cost_cents` over the coach's unpaid
+            lessons. Does not include the platform fee.
         unpaid_platform_fee_cents:
           type: integer
-          description: Sum of `platform_fee_cents` over the coach's unpaid lessons.
+          minimum: 0
+          description: >-
+            Unpaid platform fees: the sum of `platform_fee_cents` over the coach's unpaid
+            lessons.
         unpaid_total_cents:
           type: integer
+          minimum: 0
           description: >-
             What the coach owes the gym: `unpaid_cents + unpaid_platform_fee_cents`.
         currency:

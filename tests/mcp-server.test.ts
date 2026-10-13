@@ -221,6 +221,9 @@ describe('tool surface', () => {
     const quote = byName('private_lessons_get_quote');
     expect(quote?.description).toMatch(/platform_fee_cents/);
     expect(quote?.description).toMatch(/added on top of cost_cents/);
+    expect(quote?.description).toMatch(/COACH SURCHARGE/);
+    expect(quote?.description).toMatch(/coach_surcharge_reason/);
+    expect(quote?.inputSchema.properties).toHaveProperty('coach_id');
 
     const create = byName('private_lessons_create_lesson');
     expect(create?.description).toMatch(/platform_fee_cents is added on top/);
@@ -687,5 +690,143 @@ describe('reads', () => {
     expect(raw.isError).toBe(true);
     expect(json.code).toBe('FORBIDDEN');
     expect(json.request_id).toBeTruthy();
+  });
+});
+
+describe('coach surcharge on the quote', () => {
+  const surchargeQuote = {
+    duration_minutes: 60,
+    athlete_ids: [101],
+    scheduled_at: '2026-08-04T14:00:00-07:00',
+    coach_id: 9,
+    is_member: false,
+    is_late_booking: false,
+    cost_cents: 6000,
+    platform_fee_cents: 100,
+    currency: 'USD',
+    hourly_rate_cents: 3000,
+    multiplier: 2,
+    late_multiplier_applied: false,
+    coach_surcharge_applied: true,
+    coach_surcharge_reason: 'non_class_coach',
+    breakdown: '60 minutes at $30.00/hour = $30.00; coach surcharge x2 = $60.00.',
+    quoted_at: '2026-07-21T10:00:00-07:00',
+    advisory: true,
+  };
+  const newApi = (): MockApi =>
+    fullApi().on('GET /pricing-quotes', () => ({ body: { data: surchargeQuote } }));
+  const quoteArgs = {
+    athlete_ids: [101],
+    scheduled_at: '2026-08-04T14:00:00-07:00',
+    duration: 60,
+  };
+
+  it('get_quote sends coach_id as the `coach` parameter and returns the surcharge', async () => {
+    const api = newApi();
+    const client = await connect(api);
+    const { raw, json } = await call(client, 'private_lessons_get_quote', {
+      ...quoteArgs,
+      coach_id: 9,
+    });
+
+    expect(raw.isError).toBeFalsy();
+    expect(api.requestsFor('GET', '/pricing-quotes')[0]?.query.get('coach')).toBe('9');
+    expect(json).toMatchObject({
+      coach_id: 9,
+      cost_cents: 6000,
+      multiplier: 2,
+      coach_surcharge_applied: true,
+      coach_surcharge_reason: 'non_class_coach',
+      warnings: [],
+    });
+  });
+
+  it('get_quote without coach_id sends no `coach`, so the API prices the token owner', async () => {
+    const api = newApi();
+    const client = await connect(api);
+    await call(client, 'private_lessons_get_quote', quoteArgs);
+    expect(api.requestsFor('GET', '/pricing-quotes')[0]?.query.has('coach')).toBe(false);
+  });
+
+  it('the create dry run prices the lesson coach, not the token owner', async () => {
+    const api = newApi();
+    const client = await connect(api);
+    const { json } = await call(client, 'private_lessons_create_lesson', {
+      coach_id: 9,
+      athlete_ids: [101],
+      scheduled_at: '2026-08-04T14:00:00-07:00',
+      duration_minutes: 60,
+      fee_acknowledged: true,
+      dry_run: true,
+    });
+
+    expect(api.requestsFor('GET', '/pricing-quotes')[0]?.query.get('coach')).toBe('9');
+    expect(api.requestsFor('GET', '/availability')[0]?.query.get('coach')).toBe('9');
+    expect(json.quote).toMatchObject({
+      cost_cents: 6000,
+      coach_surcharge_applied: true,
+      coach_surcharge_reason: 'non_class_coach',
+    });
+    expect((json.warnings as string[]).some((w) => w.includes('coach surcharge'))).toBe(false);
+  });
+
+  it('the update dry run prices the lesson coach too', async () => {
+    const api = newApi();
+    const client = await connect(api);
+    await call(client, 'private_lessons_update_lesson', {
+      lesson_id: 42,
+      scheduled_at: '2026-08-04T15:00:00-07:00',
+      dry_run: true,
+    });
+    // makeLesson() is coach 7; the update keeps that coach.
+    expect(api.requestsFor('GET', '/pricing-quotes')[0]?.query.get('coach')).toBe('7');
+  });
+
+  it('a 403 for another coach comes back as a quote_error, not a crash', async () => {
+    const api = fullApi().on('GET /pricing-quotes', () =>
+      problem(403, 'FORBIDDEN', 'You do not have permission to perform this action.'),
+    );
+    const client = await connect(api);
+    const { raw, json } = await call(client, 'private_lessons_create_lesson', {
+      coach_id: 9,
+      athlete_ids: [101],
+      scheduled_at: '2026-08-04T14:00:00-07:00',
+      duration_minutes: 60,
+      fee_acknowledged: true,
+      dry_run: true,
+    });
+    expect(raw.isError).toBeFalsy();
+    expect(json.quote).toBeNull();
+    expect(String(json.quote_error)).toContain('FORBIDDEN');
+  });
+
+  it('an older API without the surcharge fields gives nulls and a warning, never undefined', async () => {
+    // fullApi() answers like an API that predates the coach surcharge.
+    const api = fullApi();
+    const client = await connect(api);
+
+    const got = await call(client, 'private_lessons_get_quote', { ...quoteArgs, coach_id: 9 });
+    expect(got.raw.isError).toBeFalsy();
+    expect(got.json).toMatchObject({
+      cost_cents: 2000,
+      coach_id: null,
+      multiplier: null,
+      coach_surcharge_applied: null,
+      coach_surcharge_reason: null,
+    });
+    expect(got.json.warnings).toEqual([expect.stringContaining('coach surcharge')]);
+
+    const dry = await call(client, 'private_lessons_create_lesson', {
+      coach_id: 9,
+      athlete_ids: [101],
+      scheduled_at: '2026-08-04T14:00:00-07:00',
+      duration_minutes: 60,
+      fee_acknowledged: true,
+      dry_run: true,
+    });
+    expect(dry.json.quote).toMatchObject({ cost_cents: 2000, coach_surcharge_applied: null });
+    expect(
+      (dry.json.warnings as string[]).some((w) => w.includes('does not report the coach surcharge')),
+    ).toBe(true);
   });
 });

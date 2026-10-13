@@ -163,7 +163,7 @@ export interface paths {
         put?: never;
         /**
          * Mark a lesson as paid.
-         * @description Records payment of the facility fee for a lesson. Requires scope
+         * @description Marks a lesson as paid, settling both its facility fee and its platform fee. Requires scope
          *     `lessons:mark-paid`.
          *
          *     **Optimistic concurrency:** `If-Match` is **required** (absent -> `422`
@@ -286,10 +286,24 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get an advisory facility-fee quote.
-         * @description Returns a server-computed facility fee for a prospective lesson: `cost_cents`
-         *     (plus `platform_fee_cents`, added on top), membership determination (all-athletes-enrolled rule), `is_late_booking`, and a
-         *     human-readable breakdown. Read-only, no side effects. Requires scope `lessons:read`.
+         * Get an advisory fee quote.
+         * @description Returns server-computed fees for a prospective lesson: `cost_cents` (the facility
+         *     fee), `platform_fee_cents` (the per-lesson platform fee), membership determination
+         *     (all-athletes-enrolled rule), `is_late_booking`, and a human-readable breakdown. The
+         *     coach would owe `cost_cents + platform_fee_cents`; `platform_fee_cents` is `0` for a
+         *     lesson scheduled before billing starts (2026-10-01, tenant time). Read-only, no side
+         *     effects. Requires scope `lessons:read`.
+         *
+         *     **Priced for a coach.** `cost_cents` includes the coach surcharge, exactly as
+         *     `POST /lessons` stores it: the fee is multiplied when the coach does not regularly
+         *     coach classes, or on a Saturday (tenant time) when the coach does not regularly work
+         *     Saturdays. The surcharge follows the coach's settings, so the quote is for `coach`,
+         *     which defaults to the token owner. Quoting for another coach is authorized exactly
+         *     as booking for them is: the token owner must hold the `manage-lessons` permission
+         *     (Admin, Management), else `403 FORBIDDEN` — for any other id, existing or not. For a
+         *     caller who may, an unknown or removed coach is `422 VALIDATION_FAILED`. Surcharges
+         *     never stack: a late booking with a coach surcharge is multiplied once
+         *     (`multiplier`).
          *
          *     **Advisory, not binding.** A quote is not deterministic over time (membership can
          *     change; `is_late_booking` flips once the scheduled time passes), so the response
@@ -315,13 +329,18 @@ export interface paths {
         };
         /**
          * Per-coach unpaid facility and platform fees owed to the gym.
-         * @description Returns per-coach **unpaid facility and platform fees that the coach owes the gym** —
-         *     money the coach owes the gym, **not** money families owe the coach. `unpaid_total_cents`
-         *     is the amount owed (`unpaid_cents` facility fees + `unpaid_platform_fee_cents`). Requires scope
-         *     `balances:read`. Coach/Staff see their own balance; Admin/Management see all.
+         * @description Returns per-coach **unpaid fees that the coach owes the gym** — money the coach owes
+         *     the gym, **not** money families owe the coach. Requires scope `balances:read`.
+         *     Coach/Staff see their own balance; Admin/Management see all.
          *
-         *     Amounts are computed from `effectiveCostCents()` (honouring `cost_override_cents`
-         *     and `late_fee_waived`), never raw `cost_cents`.
+         *     Each balance splits what is owed. `unpaid_cents` is the unpaid **facility fees**,
+         *     `unpaid_platform_fee_cents` is the unpaid **platform fees**, and `unpaid_total_cents`
+         *     is their sum: the amount the coach owes the gym. A coach with nothing owed gets an
+         *     explicit row with all three at `0`.
+         *
+         *     Facility amounts are computed from `effectiveCostCents()` (honouring
+         *     `cost_override_cents` and `late_fee_waived`), never raw `cost_cents`. Platform
+         *     amounts are the sum of each lesson's stored `platform_fee_cents`.
          */
         get: operations["listBalances"];
         put?: never;
@@ -431,6 +450,16 @@ export interface components {
             } | null;
             /** @description On VERSION_MISMATCH (412), the lesson's current version. */
             current_version?: number | null;
+            /**
+             * Format: uri
+             * @description On a 403 FORBIDDEN because the token's owner has not accepted the current Terms of Service: the web page where they sign off. Retrying succeeds once they have.
+             */
+            terms_url?: string;
+            /**
+             * @description With `terms_url`, the Terms of Service version awaiting acceptance.
+             * @example 2026-10-01
+             */
+            terms_version?: string;
         };
         /** @description A `ProblemDetails` whose `code` is constrained to `SLOT_CONFLICT`, so a generated client's 409 error type for this response is exactly that one code. */
         SlotConflictProblem: components["schemas"]["ProblemDetails"] & {
@@ -498,9 +527,9 @@ export interface components {
             notes?: string | null;
             /** @description Raw stored facility fee in cents, before override/waiver. */
             cost_cents: number;
-            /** @description The authoritative facility fee owed, via `effectiveCostCents()` (honours `cost_override_cents` and `late_fee_waived`). Facility-only: the coach owes this plus `platform_fee_cents`. Balances aggregate this, never `cost_cents`. */
+            /** @description The facility fee after `cost_override_cents` and `late_fee_waived`, via `effectiveCostCents()`. Balances aggregate this, never `cost_cents`. This is not the whole amount owed: the coach owes `effective_cost_cents + platform_fee_cents`. */
             effective_cost_cents: number;
-            /** @description The platform fee in cents the coach owes the gym on top of the facility fee (flat $1 per lesson). What the coach owes for the lesson is `effective_cost_cents + platform_fee_cents`. */
+            /** @description The per-lesson platform fee in cents that the coach owes the gym on top of the facility fee. Stored when the lesson is booked or rescheduled: `0` for a lesson scheduled before billing starts (2026-10-01, tenant time), the platform rate from then on. Overrides and waivers do not change it. Exception: a lesson already on the gym's platform invoice keeps its fee when it is moved before 2026-10-01, because the gym has already been billed for it. */
             platform_fee_cents: number;
             cost_override_cents?: number | null;
             cost_override_reason?: string | null;
@@ -545,24 +574,35 @@ export interface components {
             /** @example coach@example.com */
             calendar_id: string;
         };
-        /** @description Advisory facility-fee quote. Never binding; recalculated at create time. */
+        /** @description Advisory fee quote (facility fee and platform fee). Never binding; recalculated at create time. */
         PricingQuote: {
             duration_minutes: components["schemas"]["DurationMinutes"];
             athlete_ids: number[];
             scheduled_at: components["schemas"]["Rfc3339DateTime"];
+            /** @description The coach the quote is priced for: the `coach` parameter, or the token owner when it was omitted. */
+            coach_id: number;
             /** @description All-athletes-enrolled membership determination. */
             is_member: boolean;
             is_late_booking: boolean;
-            /** @description Computed facility fee in cents (excludes the platform fee). */
+            /** @description Computed facility fee in cents, late and coach surcharges included. Equals `floor(hourly_rate_cents * duration_minutes / 60) * multiplier`. */
             cost_cents: number;
-            /** @description Platform fee in cents, added on top of `cost_cents` (flat $1 per lesson). The coach owes `cost_cents + platform_fee_cents`. */
+            /** @description Per-lesson platform fee in cents, on top of `cost_cents`. `0` when the prospective lesson is scheduled before billing starts (2026-10-01, tenant time). The coach would owe `cost_cents + platform_fee_cents`. */
             platform_fee_cents: number;
             /** @constant */
             currency: "USD";
-            /** @description 1000 for members, 2000 for non-members. */
+            /** @description The member or non-member hourly rate applied, in cents. The gym sets both rates; do not hard-code them. */
             hourly_rate_cents: number;
-            /** @description Whether the x2 late surcharge was applied. */
+            /** @description Multiplier applied to the prorated rate: `1` with no surcharge, else the gym's surcharge multiplier (2 today). Applied once: a late booking with a coach surcharge is not multiplied twice. */
+            multiplier: number;
+            /** @description Whether the late-booking surcharge applies (the start time has passed). True even when a coach surcharge also applies; the multiplier is applied once. */
             late_multiplier_applied: boolean;
+            /** @description Whether a coach surcharge applies: the coach does not regularly coach classes, or this is a Saturday (tenant time) and the coach does not regularly work Saturdays. The value `POST /lessons` would store. */
+            coach_surcharge_applied: boolean;
+            /**
+             * @description Why the coach surcharge applies, or `null` when it does not. `non_class_coach` wins when both reasons hold.
+             * @enum {string|null}
+             */
+            coach_surcharge_reason: "non_class_coach" | "saturday" | null;
             /** @description Human-readable explanation of the computed fee. */
             breakdown: string;
             quoted_at: components["schemas"]["Rfc3339DateTime"];
@@ -601,13 +641,13 @@ export interface components {
             /** @description True if starting a lesson at this slot counts as a late booking. */
             is_late_booking: boolean;
         };
-        /** @description Unpaid facility and platform fees a coach owes the gym (facility fees computed from `effectiveCostCents()`). This is money the coach owes the gym, NOT money families owe the coach. */
+        /** @description Unpaid facility and platform fees a coach owes the gym. This is money the coach owes the gym, NOT money families owe the coach. `unpaid_total_cents` is what the coach owes: `unpaid_cents + unpaid_platform_fee_cents`. */
         Balance: {
             coach_id: number;
             coach_name?: string | null;
-            /** @description Sum of `effective_cost_cents` over the coach's unpaid lessons. Facility fees only; excludes the platform fee. */
+            /** @description Unpaid facility fees: the sum of `effective_cost_cents` over the coach's unpaid lessons. Does not include the platform fee. */
             unpaid_cents: number;
-            /** @description Sum of `platform_fee_cents` over the coach's unpaid lessons. */
+            /** @description Unpaid platform fees: the sum of `platform_fee_cents` over the coach's unpaid lessons. */
             unpaid_platform_fee_cents: number;
             /** @description What the coach owes the gym: `unpaid_cents + unpaid_platform_fee_cents`. */
             unpaid_total_cents: number;
@@ -1398,6 +1438,11 @@ export interface operations {
                 athlete_ids: number[];
                 /** @description Prospective start time. RFC 3339 with an explicit offset is required; naive/offset-less input is rejected with 422 VALIDATION_FAILED. */
                 scheduled_at: components["schemas"]["Rfc3339DateTime"];
+                /**
+                 * @description Coach (staff) user id whose fee to quote; the coach surcharge follows this coach's settings. Defaults to the token owner. Another coach requires the `manage-lessons` permission (403 FORBIDDEN otherwise); an unknown or removed coach is 422 VALIDATION_FAILED.
+                 * @example 7
+                 */
+                coach?: number;
             };
             header?: {
                 /**

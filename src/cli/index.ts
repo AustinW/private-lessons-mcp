@@ -25,7 +25,12 @@ import {
 } from '../core/client.js';
 import { formatETag, newIdempotencyKey, resolveIfMatch } from '../core/concurrency.js';
 import { EXIT_CODES, PrivateLessonsError, toPrivateLessonsError } from '../core/errors.js';
-import { lessonOwedCents, normalizeBalance, platformFeeCents } from '../core/fees.js';
+import {
+  coachSurchargeReasonText,
+  lessonOwedCents,
+  normalizeBalance,
+  platformFeeCents,
+} from '../core/fees.js';
 import { preflightLesson } from '../core/preflight.js';
 import { openSession, type Session } from '../core/session.js';
 import {
@@ -450,6 +455,14 @@ lessons
         info(`  basis    ${preflight.quote.breakdown}`, g);
         info(`  member   ${preflight.quote.is_member ? 'yes' : 'no'}`, g);
         info(`  late     ${preflight.quote.is_late_booking ? 'YES' : 'no'}`, g);
+        if (preflight.quote.coach_surcharge_applied) {
+          const times = preflight.quote.multiplier ? `${preflight.quote.multiplier}x ` : '';
+          info(
+            `  coach    ${times}surcharge: ` +
+              coachSurchargeReasonText(preflight.quote.coach_surcharge_reason),
+            g,
+          );
+        }
       } else {
         info(`  fee      (quote unavailable: ${preflight.quote_error})`, g);
       }

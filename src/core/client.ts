@@ -263,10 +263,15 @@ export class PrivateLessonsClient {
     });
   }
 
+  /**
+   * `coach` prices the quote for that coach's surcharge; the API defaults it to the token
+   * owner. Another coach needs the `manage-lessons` permission (403 otherwise).
+   */
   async getPricingQuote(query: {
     duration: DurationMinutes;
     athlete_ids: number[];
     scheduled_at: string;
+    coach?: number;
   }): Promise<PricingQuote> {
     assertRfc3339(query.scheduled_at);
     return PrivateLessonsClient.guard(async () => {
