@@ -25,6 +25,7 @@ import {
 } from '../core/client.js';
 import { formatETag, newIdempotencyKey, resolveIfMatch } from '../core/concurrency.js';
 import { EXIT_CODES, PrivateLessonsError, toPrivateLessonsError } from '../core/errors.js';
+import { lessonOwedCents, normalizeBalance, platformFeeCents } from '../core/fees.js';
 import { preflightLesson } from '../core/preflight.js';
 import { openSession, type Session } from '../core/session.js';
 import {
@@ -103,6 +104,26 @@ function parseIds(value: string): number[] {
     });
 }
 
+function dollars(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+/**
+ * `$16.00 ($15.00 facility + $1.00 platform)`. With no platform fee the breakdown adds
+ * nothing, so the old single amount is shown.
+ */
+function feeText(facilityCents: number, platformCents: number): string {
+  if (platformCents === 0) return dollars(facilityCents);
+  return (
+    `${dollars(facilityCents + platformCents)} ` +
+    `(${dollars(facilityCents)} facility + ${dollars(platformCents)} platform)`
+  );
+}
+
+function lessonFeeText(lesson: Lesson): string {
+  return feeText(lesson.effective_cost_cents, platformFeeCents(lesson));
+}
+
 function lessonRow(lesson: Lesson): Array<string | number | null> {
   return [
     lesson.id,
@@ -110,7 +131,7 @@ function lessonRow(lesson: Lesson): Array<string | number | null> {
     `${lesson.duration_minutes}m`,
     lesson.coach_name ?? lesson.coach_id,
     lesson.athletes.map((a) => a.name).join(', '),
-    (lesson.effective_cost_cents / 100).toFixed(2),
+    (lessonOwedCents(lesson) / 100).toFixed(2),
     lesson.cancelled_at ? 'cancelled' : lesson.paid_at ? 'paid' : 'unpaid',
     `v${lesson.version}`,
   ];
@@ -161,7 +182,7 @@ async function confirmDestructive(
     `  duration  ${lesson.duration_minutes} minutes`,
     `  coach     ${lesson.coach_name ?? lesson.coach_id}`,
     `  athletes  ${lesson.athletes.map((a) => `${a.name} (#${a.id})`).join(', ') || '—'}`,
-    `  fee       $${(lesson.effective_cost_cents / 100).toFixed(2)}`,
+    `  fee       ${lessonFeeText(lesson)}`,
     ...extraLines(lesson),
     '',
   ];
@@ -422,7 +443,10 @@ lessons
       info(`  when     ${preflight.scheduled_at_pacific}`, g);
       info(`  ends     ${preflight.ends_at_pacific}`, g);
       if (preflight.quote) {
-        info(`  fee      $${(preflight.quote.cost_cents / 100).toFixed(2)} (advisory)`, g);
+        info(
+          `  fee      ${feeText(preflight.quote.cost_cents, platformFeeCents(preflight.quote))} (advisory)`,
+          g,
+        );
         info(`  basis    ${preflight.quote.breakdown}`, g);
         info(`  member   ${preflight.quote.is_member ? 'yes' : 'no'}`, g);
         info(`  late     ${preflight.quote.is_late_booking ? 'YES' : 'no'}`, g);
@@ -479,7 +503,7 @@ lessons
       return;
     }
     info(`Booked lesson #${result.lesson.id} for ${formatPacific(result.lesson.scheduled_at)}.`, g);
-    info(`  fee   $${(result.lesson.effective_cost_cents / 100).toFixed(2)}`, g);
+    info(`  fee   ${lessonFeeText(result.lesson)}`, g);
     info(`  ETag  ${etag}`, g);
   });
 
@@ -675,7 +699,7 @@ lessons
 lessons
   .command('mark-paid')
   .description(
-    'Record payment of the facility fee. FINANCIAL: changes the coach balance and cannot ' +
+    'Record payment of the facility and platform fees. FINANCIAL: changes the coach balance and cannot ' +
       'be undone through this API. Requires lessons:mark-paid, --if-match, and confirmation.',
   )
   .argument('<id>', 'Lesson id.')
@@ -696,7 +720,9 @@ lessons
         dry_run: true,
         lesson: current.lesson,
         when_pacific: formatPacific(current.lesson.scheduled_at),
-        amount_cents: current.lesson.effective_cost_cents,
+        amount_cents: lessonOwedCents(current.lesson),
+        facility_fee_cents: current.lesson.effective_cost_cents,
+        platform_fee_cents: platformFeeCents(current.lesson),
         already_paid: current.lesson.paid_at != null,
         if_match_to_use: etag,
       };
@@ -704,7 +730,7 @@ lessons
       else {
         info('Dry run — nothing was written.', g);
         info(`  lesson  #${current.lesson.id} at ${formatPacific(current.lesson.scheduled_at)}`, g);
-        info(`  amount  $${(current.lesson.effective_cost_cents / 100).toFixed(2)}`, g);
+        info(`  amount  ${lessonFeeText(current.lesson)}`, g);
         info(`  paid    ${current.lesson.paid_at ? formatPacific(current.lesson.paid_at) : 'no'}`, g);
         info(`  if-match ${etag}`, g);
       }
@@ -714,7 +740,7 @@ lessons
     const paidAt = opts.paidAt ? assertRfc3339(String(opts.paidAt)) : undefined;
 
     const confirmed = await confirmDestructive(client, lessonId, 'mark-paid', g, (lesson) => [
-      `  amount    $${(lesson.effective_cost_cents / 100).toFixed(2)}`,
+      `  amount    ${lessonFeeText(lesson)}`,
       ...(lesson.paid_at ? [`  NOTE      already paid at ${formatPacific(lesson.paid_at)}`] : []),
       '  effect    changes the coach balance; there is no un-mark-paid endpoint.',
     ]);
@@ -911,14 +937,14 @@ program
 program
   .command('balance')
   .description(
-    'Show unpaid facility fees coaches owe the gym (not money families owe coaches). ' +
+    'Show unpaid facility and platform fees coaches owe the gym (not money families owe coaches). ' +
       'Requires balances:read.',
   )
   .option('--coach <id>', 'Filter to one coach.')
   .action(async (opts, command: Command) => {
     const g = globals(command);
     const { client } = await session(command);
-    const all = await client.listBalances();
+    const all = (await client.listBalances()).map(normalizeBalance);
     const balances = opts.coach
       ? all.filter((b) => b.coach_id === Number(opts.coach))
       : all;
@@ -932,10 +958,12 @@ program
     }
     info(
       table(
-        ['COACH', 'OWES GYM $', 'UNPAID LESSONS'],
+        ['COACH', 'FACILITY $', 'PLATFORM $', 'OWES GYM $ (TOTAL)', 'UNPAID LESSONS'],
         balances.map((b) => [
           b.coach_name ?? `#${b.coach_id}`,
           (b.unpaid_cents / 100).toFixed(2),
+          (b.unpaid_platform_fee_cents / 100).toFixed(2),
+          (b.unpaid_total_cents / 100).toFixed(2),
           b.unpaid_lesson_count,
         ]),
       ),

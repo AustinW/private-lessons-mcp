@@ -86,6 +86,7 @@ function fullApi(): MockApi {
           is_member: true,
           is_late_booking: false,
           cost_cents: 2000,
+          platform_fee_cents: 100,
           currency: 'USD',
           hourly_rate_cents: 2000,
           late_multiplier_applied: false,
@@ -98,7 +99,15 @@ function fullApi(): MockApi {
     .on('GET /balances', () => ({
       body: {
         data: [
-          { coach_id: 7, coach_name: 'Dana Smith', unpaid_cents: 6000, currency: 'USD', unpaid_lesson_count: 3 },
+          {
+            coach_id: 7,
+            coach_name: 'Dana Smith',
+            unpaid_cents: 6000,
+            unpaid_platform_fee_cents: 300,
+            unpaid_total_cents: 6300,
+            currency: 'USD',
+            unpaid_lesson_count: 3,
+          },
         ],
       },
     }))
@@ -200,6 +209,25 @@ describe('tool surface', () => {
     expect(create?.description).toMatch(/never guess/i);
     expect(create?.description).toMatch(/no name field/i);
   });
+
+  it('tells the caller the platform fee is on top of the facility fee', async () => {
+    const tools = (await client.listTools()).tools;
+    const byName = (name: string) => tools.find((t) => t.name === name);
+
+    const balance = byName('private_lessons_get_balance');
+    expect(balance?.description).toMatch(/facility fees plus platform fees/);
+    expect(balance?.description).toMatch(/unpaid_total_cents/);
+
+    const quote = byName('private_lessons_get_quote');
+    expect(quote?.description).toMatch(/platform_fee_cents/);
+    expect(quote?.description).toMatch(/added on top of cost_cents/);
+
+    const create = byName('private_lessons_create_lesson');
+    expect(create?.description).toMatch(/platform_fee_cents is added on top/);
+
+    const markPaid = byName('private_lessons_mark_lesson_paid');
+    expect(markPaid?.description).toMatch(/platform fee/);
+  });
 });
 
 describe('dry runs write nothing', () => {
@@ -216,7 +244,10 @@ describe('dry runs write nothing', () => {
     });
 
     expect(json.dry_run).toBe(true);
-    expect(json.quote).toMatchObject({ cost_cents: 2000, advisory: true });
+    expect(json.quote).toMatchObject({ cost_cents: 2000, platform_fee_cents: 100, advisory: true });
+    expect(
+      (json.notes as string[]).some((n) => n.includes('quote.platform_fee_cents')),
+    ).toBe(true);
     expect((json.availability as Record<string, unknown>).window_is_bookable).toBe(true);
     expect(json.scheduled_at_pacific).toContain('Aug 4, 2026');
 
@@ -247,7 +278,10 @@ describe('dry runs write nothing', () => {
     });
 
     expect(json.dry_run).toBe(true);
-    expect(json.amount_owed_cents).toBe(2000);
+    // What the coach owes = facility fee (2000) + platform fee (100).
+    expect(json.amount_owed_cents).toBe(2100);
+    expect(json.facility_fee_cents).toBe(2000);
+    expect(json.platform_fee_cents).toBe(100);
     expect(json.already_paid).toBe(false);
     expect(api.requestsFor('POST', '/lessons/42/mark-paid')).toHaveLength(0);
   });
@@ -277,6 +311,7 @@ describe('dry runs write nothing', () => {
           is_member: false,
           is_late_booking: true,
           cost_cents: 4000,
+          platform_fee_cents: 100,
           currency: 'USD',
           hourly_rate_cents: 2000,
           late_multiplier_applied: true,
@@ -494,6 +529,116 @@ describe('writes', () => {
   });
 });
 
+describe('an API that does not send the platform-fee fields yet', () => {
+  // The MCP can be upgraded before the API deploys: missing fields mean "no platform
+  // fee", never NaN.
+  const withoutPlatformFee = <T extends Record<string, unknown>>(
+    row: T,
+    ...keys: string[]
+  ): Record<string, unknown> => {
+    const copy: Record<string, unknown> = { ...row };
+    for (const key of keys) delete copy[key];
+    return copy;
+  };
+
+  it('mark_lesson_paid dry run owes just the facility fee', async () => {
+    const api = fullApi().on('GET /lessons/42', () => ({
+      body: { data: withoutPlatformFee(makeLesson(), 'platform_fee_cents') },
+      headers: { etag: '"lesson-42-v3"' },
+    }));
+    const client = await connect(api);
+    const { json } = await call(client, 'private_lessons_mark_lesson_paid', {
+      lesson_id: 42,
+      dry_run: true,
+    });
+    expect(json.amount_owed_cents).toBe(2000);
+    expect(json.facility_fee_cents).toBe(2000);
+    expect(json.platform_fee_cents).toBe(0);
+  });
+
+  it('get_balance fills the total from unpaid_cents', async () => {
+    const api = fullApi().on('GET /balances', () => ({
+      body: {
+        data: [
+          {
+            coach_id: 7,
+            coach_name: 'Dana Smith',
+            unpaid_cents: 6000,
+            currency: 'USD',
+            unpaid_lesson_count: 3,
+          },
+        ],
+      },
+    }));
+    const client = await connect(api);
+    const { json } = await call(client, 'private_lessons_get_balance', {});
+    const balances = json.balances as Array<Record<string, unknown>>;
+    expect(balances[0]).toMatchObject({
+      unpaid_cents: 6000,
+      unpaid_platform_fee_cents: 0,
+      unpaid_total_cents: 6000,
+    });
+  });
+
+  it('get_balance sums a total the API left out when only the platform fee is sent', async () => {
+    const api = fullApi().on('GET /balances', () => ({
+      body: {
+        data: [
+          {
+            coach_id: 7,
+            coach_name: 'Dana Smith',
+            unpaid_cents: 6000,
+            unpaid_platform_fee_cents: 300,
+            currency: 'USD',
+            unpaid_lesson_count: 3,
+          },
+        ],
+      },
+    }));
+    const client = await connect(api);
+    const { json } = await call(client, 'private_lessons_get_balance', {});
+    const balances = json.balances as Array<Record<string, unknown>>;
+    expect(balances[0]).toMatchObject({ unpaid_platform_fee_cents: 300, unpaid_total_cents: 6300 });
+  });
+
+  it('get_quote and the create dry run report a platform fee of 0', async () => {
+    const quote = {
+      duration_minutes: 60,
+      athlete_ids: [101],
+      scheduled_at: '2026-08-04T14:00:00-07:00',
+      is_member: true,
+      is_late_booking: false,
+      cost_cents: 2000,
+      currency: 'USD',
+      hourly_rate_cents: 2000,
+      late_multiplier_applied: false,
+      breakdown: '60 minutes at the member rate.',
+      quoted_at: '2026-07-21T10:00:00-07:00',
+      advisory: true,
+    };
+    const api = fullApi().on('GET /pricing-quotes', () => ({ body: { data: quote } }));
+    const client = await connect(api);
+
+    const got = await call(client, 'private_lessons_get_quote', {
+      athlete_ids: [101],
+      scheduled_at: '2026-08-04T14:00:00-07:00',
+      duration: 60,
+    });
+    expect(got.json.cost_cents).toBe(2000);
+    expect(got.json.platform_fee_cents).toBe(0);
+
+    const dry = await call(client, 'private_lessons_create_lesson', {
+      coach_id: 7,
+      athlete_ids: [101],
+      scheduled_at: '2026-08-04T14:00:00-07:00',
+      duration_minutes: 60,
+      fee_acknowledged: true,
+      dry_run: true,
+    });
+    expect(dry.json.quote).toMatchObject({ cost_cents: 2000, platform_fee_cents: 0 });
+  });
+});
+
 describe('reads', () => {
   it('renders every timestamp in Pacific alongside the machine form', async () => {
     const client = await connect(fullApi());
@@ -513,13 +658,24 @@ describe('reads', () => {
     });
     expect(json.advisory).toBe(true);
     expect(json.cost_cents).toBe(2000);
+    expect(json.platform_fee_cents).toBe(100);
     expect(String(json.reminder)).toContain('recalculated server-side');
+    expect(String(json.reminder)).toContain('platform fee');
   });
 
   it('explains what a balance means', async () => {
     const client = await connect(fullApi());
     const { json } = await call(client, 'private_lessons_get_balance', {});
-    expect(String(json.meaning)).toContain('coach owes the gym');
+    expect(String(json.meaning)).toBe(
+      'unpaid_total_cents is what the coach owes the gym: unpaid_cents (facility fees) + ' +
+        'unpaid_platform_fee_cents (the $1-per-lesson platform fee).',
+    );
+    const balances = json.balances as Array<Record<string, unknown>>;
+    expect(balances[0]).toMatchObject({
+      unpaid_cents: 6000,
+      unpaid_platform_fee_cents: 300,
+      unpaid_total_cents: 6300,
+    });
   });
 
   it('surfaces a 403 FORBIDDEN from the audit endpoint as a tool error', async () => {
